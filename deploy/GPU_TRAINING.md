@@ -6,7 +6,7 @@
 
 EpiKT 训练、校准和留出评估只需要数据与 CUDA 环境。Gemini 的 `.env` 在启动启用 LLM 的应用后端时单独配置，见第 6 节。
 
-1. 在 AutoDL 克隆私有仓库并解压仓库自带的训练输入包，命令见下方。
+1. 在 AutoDL 克隆仓库并解压仓库自带的训练输入包，命令见下方。
 2. 激活已经配好 CUDA 版 PyTorch 的 Python 环境，在项目根目录安装项目依赖并检查 GPU。
 3. 用默认参数启动训练。训练完成后，checkpoint 在 `artifacts/epikt-dbe-fold0/qid_alibi_model.ckpt`。
 
@@ -27,7 +27,7 @@ CUDA 检查报错时再查第 2 节。单轮试跑、保存日志和环境记录
 
 ### 从 GitHub 克隆
 
-私有 GitHub 仓库包含项目代码和 `artifacts/querystep-autodl-inputs.tar.gz`。在 AutoDL 直接克隆并解压，得到随附 pyKT 和固定的 SQL Core 数据。
+GitHub 仓库包含项目代码和 `artifacts/querystep-autodl-inputs.tar.gz`。在 AutoDL 直接克隆并解压，得到随附 pyKT 和固定的 SQL Core 数据。
 
 ```bash
 cd ~
@@ -36,7 +36,7 @@ cd QueryStep
 tar -xzf artifacts/querystep-autodl-inputs.tar.gz
 ```
 
-在该目录继续安装依赖和训练。AutoDL 需先具备访问私有仓库的 GitHub 凭据。
+在该目录继续安装依赖和训练。
 
 ## 1. 备用方式：从 Mac 打包并传输
 
