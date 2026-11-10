@@ -6,8 +6,8 @@
 
 EpiKT 训练、校准和留出评估只需要数据与 CUDA 环境。Gemini 的 `.env` 在启动启用 LLM 的应用后端时单独配置，见第 6 节。
 
-1. 上传第 1 节的训练包，在 AutoDL 解压。包里已经包含代码、随附 pyKT 和预处理后的 SQL Core 数据。
-2. 激活已经配好 CUDA 版 PyTorch 的 Python 环境，在解压后的项目根目录安装项目依赖并检查 GPU。
+1. 在 AutoDL 克隆私有仓库并解压仓库自带的训练输入包，命令见下方。
+2. 激活已经配好 CUDA 版 PyTorch 的 Python 环境，在项目根目录安装项目依赖并检查 GPU。
 3. 用默认参数启动训练。训练完成后，checkpoint 在 `artifacts/epikt-dbe-fold0/qid_alibi_model.ckpt`。
 
 ```bash
@@ -27,18 +27,20 @@ CUDA 检查报错时再查第 2 节。单轮试跑、保存日志和环境记录
 
 ### 从 GitHub 克隆
 
-私有 GitHub 仓库包含应用和训练入口。下载仓库后，另通过私有文件传输上传 `querystep-autodl-inputs.tar.gz`，解压到克隆的 QueryStep 根目录。该包补齐随附 pyKT 和固定的 SQL Core 数据。
+私有 GitHub 仓库包含项目代码和 `artifacts/querystep-autodl-inputs.tar.gz`。在 AutoDL 直接克隆并解压，得到随附 pyKT 和固定的 SQL Core 数据。
 
 ```bash
+cd ~
+git clone https://github.com/Yikessa24/QueryStep.git
 cd QueryStep
-tar -xzf /path/to/querystep-autodl-inputs.tar.gz
+tar -xzf artifacts/querystep-autodl-inputs.tar.gz
 ```
 
 在该目录继续安装依赖和训练。AutoDL 需先具备访问私有仓库的 GitHub 凭据。
 
-## 1. 从 Mac 准备并传输文件
+## 1. 备用方式：从 Mac 打包并传输
 
-默认传已预处理的数据，沿用现有切分、ID 映射和 `manifest.json`。在有权限处理 DBE-KT22 和匿名研究源码的服务器上建私有目录。
+本节适用于手动传输独立训练包的情况。默认传已预处理的数据，沿用现有切分、ID 映射和 `manifest.json`。在有权限处理 DBE-KT22 和匿名研究源码的服务器上建私有目录。
 
 | 内容 | 需要传的文件 |
 |---|---|
@@ -83,12 +85,10 @@ python -m data_pipeline.preprocess --scope sql-core --maxlen 200
 
 ## 2. 配置 Linux Conda 与 CUDA
 
-以下命令在 **GPU 服务器**执行。如果是 Slurm 等集群，先申请一张 GPU，然后在分配到的计算节点执行 CUDA 检查和训练。沿用调度器设置的 `CUDA_VISIBLE_DEVICES`。
+以下命令在 **GPU 服务器**的项目根目录执行。若通过 GitHub 克隆，该目录通常是 `~/QueryStep`。如果是 Slurm 等集群，先申请一张 GPU，然后在分配到的计算节点执行 CUDA 检查和训练。沿用调度器设置的 `CUDA_VISIBLE_DEVICES`。
 
 ```bash
 umask 077
-cd ~/querystep-gpu
-tar -xzf querystep-training.tar.gz
 uname -m
 nvidia-smi
 conda --version
@@ -203,7 +203,7 @@ scp -r "$gpu_host:querystep-gpu/artifacts/epikt-dbe-fold0" "$project/artifacts/"
 
 ## 6. 接入学生端并验收
 
-当前原版 `qid_alibi` 初始化依赖 CUDA，**正式权重先在 GPU 上加载**。可在同一服务器部署 QueryStep API，在 Mac 运行前端。训练包只够训练和评估，部署 API 时另外同步同版本的 `api/`、`tutor/`、`course_content/`，并安装 API 依赖。
+当前原版 `qid_alibi` 初始化依赖 CUDA，**正式权重先在 GPU 上加载**。可在同一服务器部署 QueryStep API，在 Mac 运行前端。GitHub 克隆包含应用源码。如果走第 1 节的独立训练包路径，部署 API 时还需要同步同版本的 `api/`、`tutor/`、`course_content/`。
 
 题库使用获准展示且能对齐该 run 的版本。每题的 `source_question_id` 与有序 `source_kcs` 要和 run 的映射一致，并且题目要在 `calibration.json` 的训练支持名单内。项目自带的原创题库默认走规则。本机已准备好 `artifacts/dbe-sql-approved.json`。如果需要从获准使用的原始 ZIP 和对应预处理产物重新生成，可用 `python -m course_content.import_dbe --authorized --demo-context --output artifacts/dbe-sql-approved.json`。将获准题库同步到 GPU 服务器，并把下面的 `QUERYSTEP_CATALOG` 改成实际路径。
 
