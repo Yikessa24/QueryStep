@@ -4,12 +4,14 @@
 
 ## AutoDL 快速开跑
 
+EpiKT 训练、校准和留出评估只需要数据与 CUDA 环境。Gemini 的 `.env` 在启动启用 LLM 的应用后端时单独配置，见第 6 节。
+
 1. 上传第 1 节的训练包，在 AutoDL 解压。包里已经包含代码、随附 pyKT 和预处理后的 SQL Core 数据。
 2. 激活已经配好 CUDA 版 PyTorch 的 Python 环境，在解压后的项目根目录安装项目依赖并检查 GPU。
 3. 用默认参数启动训练。训练完成后，checkpoint 在 `artifacts/epikt-dbe-fold0/qid_alibi_model.ckpt`。
 
 ```bash
-python -m pip install -e '.[kt]'
+python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e '.[kt]'
 python -c 'import torch; print(torch.ones(1, device="cuda"))'
 python -m kt.train --run artifacts/epikt-dbe-fold0
 ```
@@ -94,16 +96,18 @@ conda --version
 
 服务器未提供 Conda 时，先按官方说明安装与服务器架构匹配的 Linux Miniconda，或加载集群提供的 Conda 模块。环境文件固定 Python 3.11。 [Miniconda 安装](https://www.anaconda.com/docs/getting-started/miniconda/install) · [Conda 环境管理](https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html)
 
-下面给出 **Linux x86_64** 的固定版本示例。对于 A100、H100、RTX 4090 等，若 `nvidia-smi` 显示的 CUDA 支持版本至少为 12.6，可先用 PyTorch 2.7.1 的 `cu126`。对于 RTX 50 系列等 Blackwell GPU，选支持该 GPU 架构的构建，例如同版 `cu128`，并使用支持 CUDA 12.8 和该卡的驱动。其他机型按实际 GPU、驱动和官方 wheel 选择。这里使用预编译 wheel，项目的这一条训练路径无需额外安装 `nvcc`。 [PyTorch 版本与安装命令](https://pytorch.org/get-started/previous-versions/#v271) · [Blackwell 支持说明](https://pytorch.org/blog/pytorch-2-7/) · [NVIDIA CUDA 与驱动兼容性](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html)
+下面给出 **Linux x86_64** 的固定版本示例。Conda 和项目的 PyPI 依赖使用清华镜像。PyTorch CUDA wheel 使用其官方索引，按驱动和显卡选择。对于 A100、H100、RTX 4090 等，若 `nvidia-smi` 显示的 CUDA 支持版本至少为 12.6，可先用 PyTorch 2.7.1 的 `cu126`。对于 RTX 50 系列等 Blackwell GPU，选支持该 GPU 架构的构建，例如同版 `cu128`，并使用支持 CUDA 12.8 和该卡的驱动。这里使用预编译 wheel，无需额外安装 `nvcc`。 [清华 Conda 镜像](https://mirrors.tuna.tsinghua.edu.cn/help/anaconda/) · [清华 PyPI 镜像](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/) · [PyTorch CUDA 版本](https://pytorch.org/get-started/previous-versions/#v271) · [Blackwell 支持说明](https://pytorch.org/blog/pytorch-2-7/)
 
 ```bash
-conda create --override-channels -c conda-forge -n querystep python=3.11 pip
+conda create -n querystep python=3.11 pip --override-channels \
+  -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge -y
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate querystep
 
 # 本例为 cu126。上述 Blackwell 示例将 cu126 换成 cu128。
 python -m pip install 'torch==2.7.1' \
   --index-url https://download.pytorch.org/whl/cu126
-python -m pip install -e '.[kt]'
+python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e '.[kt]'
 python -m pip check
 
 python - <<'PY'
@@ -205,10 +209,17 @@ scp -r "$gpu_host:querystep-gpu/artifacts/epikt-dbe-fold0" "$project/artifacts/"
 
 在 Mac 的项目根目录先运行 `python -m course_content.check_catalog --run artifacts/epikt-dbe-fold0 --catalog artifacts/dbe-sql-approved.json`。预检只核对文件、映射和准入报告。模型实际加载在 GPU 服务启动时验证。
 
+如果后端也部署在 AutoDL 并启用 Gemini，用私有 SSH 文件传输把 Mac 已验证的 `.env` 复制到 AutoDL 的 QueryStep 根目录，或从 `.env.example` 创建后填写 Base URL、API Key 和模型 ID。GitHub 仓库只包含 `.env.example`。复制后执行 `chmod 600 .env`，在 AutoDL 上验证 Gemini 服务可达性。研究题的外部辅导配置见 [操作指南](OPERATIONS.md)。
+
 ```bash
 # GPU 服务器，确认已同步 API 与获准题库
 conda activate querystep
-python -m pip install -e '.[kt,api]'
+python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e '.[kt,api]'
+if [ -f .env ]; then
+  set -a
+  source ./.env
+  set +a
+fi
 export QUERYSTEP_EPIKT_RUN="$PWD/artifacts/epikt-dbe-fold0"
 export QUERYSTEP_CATALOG="$PWD/artifacts/dbe-sql-approved.json"
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
