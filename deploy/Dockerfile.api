@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+WORKDIR /app
+ARG QUERYSTEP_EXTRAS=api
+COPY pyproject.toml ./
+COPY api api
+COPY data_pipeline data_pipeline
+COPY evals evals
+COPY kt kt
+COPY tutor tutor
+COPY course_content/__init__.py course_content/catalog.json course_content/lessons.py ./course_content/
+RUN pip install --no-cache-dir -e ".[${QUERYSTEP_EXTRAS}]"
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

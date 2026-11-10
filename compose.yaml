@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: querystep
+      POSTGRES_USER: querystep
+      POSTGRES_PASSWORD: ${QUERYSTEP_DB_PASSWORD:?Set QUERYSTEP_DB_PASSWORD}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "querystep", "-d", "querystep"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.api
+    environment:
+      QUERYSTEP_DATABASE_URL: postgresql+psycopg://querystep@db:5432/querystep
+      PGPASSWORD: ${QUERYSTEP_DB_PASSWORD:?Set QUERYSTEP_DB_PASSWORD}
+      QUERYSTEP_LLM_BASE_URL: ${QUERYSTEP_LLM_BASE_URL:-}
+      QUERYSTEP_LLM_MODEL: ${QUERYSTEP_LLM_MODEL:-}
+      QUERYSTEP_LLM_API_KEY: ${QUERYSTEP_LLM_API_KEY:-}
+      QUERYSTEP_LLM_TIMEOUT_SECONDS: ${QUERYSTEP_LLM_TIMEOUT_SECONDS:-5}
+      QUERYSTEP_LLM_ALLOW_INSECURE_HTTP: ${QUERYSTEP_LLM_ALLOW_INSECURE_HTTP:-0}
+    depends_on:
+      db:
+        condition: service_healthy
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+    depends_on: [api]
+    ports:
+      - "127.0.0.1:8080:80"
+volumes:
+  pgdata:

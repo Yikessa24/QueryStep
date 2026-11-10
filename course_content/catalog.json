@@ -1,0 +1,230 @@
+{
+  "version": "original-sql-v1",
+  "items": [
+    {
+      "id": 1,
+      "title": "选择输出列",
+      "prompt": "表 books(id, title, price) 中，哪条语句只输出书名？",
+      "options": [
+        "SELECT title FROM books",
+        "SELECT * FROM books",
+        "SELECT price FROM books",
+        "SELECT id FROM books"
+      ],
+      "correct_option": 0,
+      "level": 1,
+      "topic": "select",
+      "hint": "先找 SELECT 和 FROM 之间的部分。它列出了要输出的列。"
+    },
+    {
+      "id": 2,
+      "title": "筛选行",
+      "prompt": "orders(id, total) 中，哪条语句只输出金额严格大于 50 的订单编号？",
+      "options": [
+        "SELECT id FROM orders WHERE total >= 50",
+        "SELECT id FROM orders WHERE total > 50",
+        "SELECT total FROM orders WHERE id > 50",
+        "SELECT id FROM orders"
+      ],
+      "correct_option": 1,
+      "level": 1,
+      "topic": "where",
+      "hint": "先区分输出的列和用于筛选的列，再留意是否包含边界值。"
+    },
+    {
+      "id": 3,
+      "title": "等值条件",
+      "prompt": "表 tasks(id, status) 中，哪条语句查询所有已完成任务的编号？已完成用字符串 done 表示。",
+      "options": [
+        "SELECT status FROM tasks WHERE id = 'done'",
+        "SELECT id FROM tasks",
+        "SELECT id FROM tasks WHERE status = 'done'",
+        "SELECT status FROM tasks WHERE status = 'done'"
+      ],
+      "correct_option": 2,
+      "level": 1,
+      "topic": "where",
+      "hint": "输出列和筛选条件分别对应 SELECT 和 WHERE。"
+    },
+    {
+      "id": 4,
+      "title": "输出多列",
+      "prompt": "表 cities(id, name, population) 中，哪条语句输出城市名称和人口两列？",
+      "options": [
+        "SELECT name population FROM cities",
+        "SELECT name, population FROM cities",
+        "SELECT * FROM cities",
+        "SELECT population FROM cities"
+      ],
+      "correct_option": 1,
+      "level": 1,
+      "topic": "select",
+      "hint": "当你需要输出多列时，检查列名之间的分隔符。"
+    },
+    {
+      "id": 5,
+      "title": "边界值",
+      "prompt": "库存数量分别为 0、4、5、6。WHERE quantity >= 5 会保留哪些数量？",
+      "options": [
+        "只有 6",
+        "0、4、5、6",
+        "5 和 6",
+        "4 和 5"
+      ],
+      "correct_option": 2,
+      "level": 2,
+      "topic": "where",
+      "hint": "把条件分别代入等于边界和大于边界的两行。"
+    },
+    {
+      "id": 6,
+      "title": "筛选文本",
+      "prompt": "customers(id, city) 中，哪条语句返回城市为 Nanjing 的所有客户编号？",
+      "options": [
+        "SELECT city FROM customers WHERE city = 'Nanjing'",
+        "SELECT id FROM customers WHERE city = 'Nanjing'",
+        "SELECT id FROM customers WHERE city <> 'Nanjing'",
+        "SELECT id FROM customers"
+      ],
+      "correct_option": 1,
+      "level": 2,
+      "topic": "where",
+      "hint": "先写清要输出客户的哪个字段，再写城市条件。"
+    },
+    {
+      "id": 7,
+      "title": "同时满足条件",
+      "prompt": "products(name, stock, price) 中，要查有库存且单价低于 30 的商品名，WHERE 应使用哪个条件？",
+      "options": [
+        "stock > 0 OR price < 30",
+        "stock >= 0 AND price < 30",
+        "stock > 0 AND price <= 30",
+        "stock > 0 AND price < 30"
+      ],
+      "correct_option": 3,
+      "level": 2,
+      "topic": "conditions",
+      "hint": "用一条仅满足其中一项的记录检查连接符。"
+    },
+    {
+      "id": 8,
+      "title": "任一条件满足",
+      "prompt": "tickets(id, urgent, blocked) 中，想保留 urgent 或 blocked 至少一项等于 1 的工单。哪个条件正确？",
+      "options": [
+        "urgent = 1 AND blocked = 1",
+        "urgent = 1 OR blocked = 1",
+        "urgent = 0 OR blocked = 0",
+        "urgent = 0 AND blocked = 0"
+      ],
+      "correct_option": 1,
+      "level": 2,
+      "topic": "conditions",
+      "hint": "分别考虑两列都符合、只有一列符合、两列都不符合。"
+    },
+    {
+      "id": 9,
+      "title": "括号与条件",
+      "prompt": "配送只面向 Shanghai 或 Suzhou，且订单金额必须达到 100。哪个条件符合？",
+      "options": [
+        "(city = 'Shanghai' OR city = 'Suzhou') AND total >= 100",
+        "city = 'Shanghai' OR (city = 'Suzhou' AND total >= 100)",
+        "city = 'Shanghai' AND city = 'Suzhou' AND total >= 100",
+        "(city = 'Shanghai' OR city = 'Suzhou') OR total >= 100"
+      ],
+      "correct_option": 0,
+      "level": 3,
+      "topic": "conditions",
+      "hint": "先把两个城市组成一组，再让金额条件对整组生效。"
+    },
+    {
+      "id": 10,
+      "title": "删除重复输出",
+      "prompt": "orders(id, city) 的 city 依次是 Wuxi、Wuxi、Suzhou。哪条语句只输出两个不同的城市？",
+      "options": [
+        "SELECT city FROM orders",
+        "SELECT DISTINCT id FROM orders",
+        "SELECT DISTINCT city FROM orders",
+        "SELECT id, city FROM orders"
+      ],
+      "correct_option": 2,
+      "level": 1,
+      "topic": "distinct",
+      "hint": "检查 DISTINCT 作用于哪一列的输出。"
+    },
+    {
+      "id": 11,
+      "title": "去重的范围",
+      "prompt": "查询 SELECT DISTINCT city, channel FROM orders。四行数据是 (A, web)、(A, web)、(A, store)、(B, web)。结果有几行？",
+      "options": [
+        "1 行",
+        "2 行",
+        "3 行",
+        "4 行"
+      ],
+      "correct_option": 2,
+      "level": 2,
+      "topic": "distinct",
+      "hint": "把 SELECT 输出的两列作为一个整体，再比较哪些结果行完全相同。"
+    },
+    {
+      "id": 12,
+      "title": "筛选后去重",
+      "prompt": "orders(city, total) 有 (A, 30)、(A, 90)、(B, 40)、(B, 80)、(C, 20)。SELECT DISTINCT city FROM orders WHERE total >= 50 返回哪些城市？",
+      "options": [
+        "A 和 B",
+        "A、B 和 C",
+        "只有 B",
+        "只有 A"
+      ],
+      "correct_option": 0,
+      "level": 3,
+      "topic": "distinct",
+      "hint": "先逐行判断金额，再对留下的城市去重。"
+    },
+    {
+      "id": 13,
+      "title": "比较不等条件",
+      "prompt": "scores(id, score) 中，哪个条件能保留小于 60 的分数？",
+      "options": [
+        "score <= 60",
+        "score > 60",
+        "score < 60",
+        "score = 60"
+      ],
+      "correct_option": 2,
+      "level": 1,
+      "topic": "where",
+      "hint": "用 59、60、61 作为边界测试。"
+    },
+    {
+      "id": 14,
+      "title": "识别投影和筛选",
+      "prompt": "SELECT customer_id FROM orders WHERE total >= 100 的结果每行包含什么？",
+      "options": [
+        "customer_id 与 total",
+        "仅 total",
+        "orders 的所有列",
+        "仅 customer_id"
+      ],
+      "correct_option": 3,
+      "level": 2,
+      "topic": "select",
+      "hint": "判断一列是否出现在结果时，只看投影列表。"
+    },
+    {
+      "id": 15,
+      "title": "缺失值筛选",
+      "prompt": "events(id, finished_at) 中，想查尚未记录完成时间的行。哪个条件正确？",
+      "options": [
+        "finished_at = NULL",
+        "finished_at IS NULL",
+        "finished_at <> NULL",
+        "finished_at IS NOT NULL"
+      ],
+      "correct_option": 1,
+      "level": 3,
+      "topic": "where",
+      "hint": "SQL 对 NULL 有专门的判定语法。"
+    }
+  ]
+}

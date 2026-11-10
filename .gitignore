@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+.env
+.env.*
+!.env.example
+data/
+artifacts/
+research/
+web/node_modules/
+web/dist/
