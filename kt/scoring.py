@@ -102,9 +102,12 @@ class EpiKTScorer:
         config = files.config
         emb_type = config["params"]["emb_type"]
         if emb_type == "qid_alibi" and not torch.cuda.is_available():
-            raise RuntimeError("The original pyKT qid_alibi implementation requires CUDA.")
-        pykt = bundled_pykt()
-        self.model = pykt.init_model("epikt", config["model_config"], config["data_config"], emb_type)
+            from kt.cpu_epikt import init_cpu_alibi
+
+            self.model = init_cpu_alibi(config["model_config"], config["data_config"])
+        else:
+            pykt = bundled_pykt()
+            self.model = pykt.init_model("epikt", config["model_config"], config["data_config"], emb_type)
         self.device = next(self.model.parameters()).device
         self.model.load_state_dict(
             torch.load(files.checkpoint, map_location=self.device, weights_only=True), strict=True

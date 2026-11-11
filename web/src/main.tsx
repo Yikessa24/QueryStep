@@ -11,6 +11,7 @@ type Turn = { message: string; text: string; source: "llm" | "template"; action:
 type Progress = { total: number; correct: number; pending: Presentation | null;
   last: { presentation: Presentation; feedback: Feedback; turns: Turn[] } | null };
 type Replay = { chosen_item_id: number; source: string; comparison: { rule_item_id?: number | null; model_version?: string } };
+type PendingRequest = "practice" | "tutor";
 
 const practiceDirection: Record<number, string> = {
   1: "先练一道基础题",
@@ -60,8 +61,10 @@ function App() {
   const [choice, setChoice] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [replay, setReplay] = useState<Replay | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [pendingRequest, setPendingRequest] = useState<PendingRequest | null>(null);
   const [error, setError] = useState("");
+  const busy = pendingRequest !== null;
+  const tutorPending = pendingRequest === "tutor";
 
   useEffect(() => {
     let active = true;
@@ -84,9 +87,9 @@ function App() {
     return () => { active = false; };
   }, []);
 
-  async function perform(work: () => Promise<void>) {
+  async function perform(work: () => Promise<void>, request: PendingRequest = "practice") {
     if (busy) return;
-    setBusy(true);
+    setPendingRequest(request);
     setError("");
     try {
       await work();
@@ -97,7 +100,7 @@ function App() {
       }
       setError(problem instanceof Error ? problem.message : "请求失败，请重试。");
     } finally {
-      setBusy(false);
+      setPendingRequest(null);
     }
   }
 
@@ -146,7 +149,7 @@ function App() {
       const result = await api<Turn>(`/api/practice/${id}/tutor`, { message: text });
       setTurns((existing) => [...existing, result]);
       setMessage("");
-    });
+    }, "tutor");
   }
 
   return (
@@ -208,9 +211,15 @@ function App() {
                       ? <a key={source.id} href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
                       : <span key={source.id} className="citation">{source.title}</span>)}
                   </article>)}
+                  <div role="status">
+                    {tutorPending && <p className="tutor-thinking">
+                      <span className="tutor-thinking-dots" aria-hidden="true"><span /><span /><span /></span>
+                      助教正在思考…
+                    </p>}
+                  </div>
                   <form onSubmit={ask} className="tutor-form">
                     <input aria-label="你的问题" placeholder="说说你刚才是怎么想的…" maxLength={500}
-                      value={message} onChange={(event) => setMessage(event.target.value)} />
+                      value={message} readOnly={tutorPending} onChange={(event) => setMessage(event.target.value)} />
                     <button type="submit" disabled={busy || !message.trim()}>发送</button>
                   </form>
                 </section>}

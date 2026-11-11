@@ -83,7 +83,7 @@ python -m course_content.import_dbe --authorized --demo-context \
   --output artifacts/dbe-sql-approved.json
 ```
 
-预检核对文件指纹、模型索引、题号、KC、训练覆盖和准入报告。报告只打印内部题目 ID 与错误原因。通过预检后，在 Linux CUDA 环境将 `QUERYSTEP_EPIKT_RUN` 指向完整 run，将 `QUERYSTEP_CATALOG` 指向该题库 JSON。由 GPU 加载测试确认 checkpoint 可反序列化并运行，再检查 API：
+预检核对文件指纹、模型索引、题号、KC、训练覆盖和准入报告。报告只打印内部题目 ID 与错误原因。通过预检后，将 `QUERYSTEP_EPIKT_RUN` 指向完整 run，将 `QUERYSTEP_CATALOG` 指向该题库 JSON，再启动 API。Mac 上使用 CPU 推理，Linux CUDA 环境沿用原 pyKT 的模型初始化。启动后检查 API：
 
 ```bash
 curl -fsS http://127.0.0.1:8000/healthz
@@ -121,6 +121,6 @@ python -m unittest discover -s tests -p test_practice_api.py -v
 
 ## 5. 部署
 
-本机 Docker Compose 预览见 [部署说明](README.md)。配置 `QUERYSTEP_DB_PASSWORD` 后运行 `docker compose config --quiet` 和 `docker compose up --build`，浏览器访问本地 8080 端口。Compose 以 PostgreSQL 保存学生状态，并可配置 LLM。GPU 权重接入使用独立 CUDA 环境和授权题库。
+本机 Docker Compose 预览见 [部署说明](README.md)。配置 `QUERYSTEP_DB_PASSWORD` 后运行 `docker compose config --quiet` 和 `docker compose up --build`，浏览器访问本地 8080 端口。Compose 以 PostgreSQL 保存学生状态，并可配置 LLM。正式权重接入可用前述本地 Conda 环境和获准题库。
 
 用于公开学生服务前，应补做真实模型联调、完整容器验证、服务入口鉴权和请求限流，并通过 HTTPS 提供学生端。当前匿名 Cookie 按浏览器隔离学习状态，适用于本机或受控演示。跨设备身份、公开服务和正式学习效果是独立验收范围。

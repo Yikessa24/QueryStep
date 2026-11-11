@@ -199,15 +199,25 @@ mkdir -p "$project/artifacts"
 scp -r "$gpu_host:querystep-gpu/artifacts/epikt-dbe-fold0" "$project/artifacts/"
 ```
 
-保留生成时的 JSON 文件内容。在线加载会校验文件指纹；即使 `config.json` 中记录的是服务器路径，当前加载器也无需打开该路径的训练数据。带回 Mac 的目录可以用于审查和归档。 [权重加载实现](../kt/scoring.py)
+保留生成时的 JSON 文件内容。在线加载会校验文件指纹。即使 `config.json` 中记录的是服务器路径，当前加载器也无需打开该路径的训练数据。可以用 FileZilla 直接把整个 run 目录下载到 Mac 项目下的 `artifacts/`。 [权重加载实现](../kt/scoring.py)
 
 ## 6. 接入学生端并验收
 
-当前原版 `qid_alibi` 初始化依赖 CUDA，**正式权重先在 GPU 上加载**。可在同一服务器部署 QueryStep API，在 Mac 运行前端。GitHub 克隆包含应用源码。如果走第 1 节的独立训练包路径，部署 API 时还需要同步同版本的 `api/`、`tutor/`、`course_content/`。
+带回正式 run 后，可在 Mac 上启动前后端。在线推理在 CUDA 不可用时自动用 CPU 加载 `qid_alibi`，沿用训练时的权重、模型结构和校准参数。 [CPU 加载适配](../kt/cpu_epikt.py)
 
-题库使用获准展示且能对齐该 run 的版本。每题的 `source_question_id` 与有序 `source_kcs` 要和 run 的映射一致，并且题目要在 `calibration.json` 的训练支持名单内。项目自带的原创题库默认走规则。本机已准备好 `artifacts/dbe-sql-approved.json`。如果需要从获准使用的原始 ZIP 和对应预处理产物重新生成，可用 `python -m course_content.import_dbe --authorized --demo-context --output artifacts/dbe-sql-approved.json`。将获准题库同步到 GPU 服务器，并把下面的 `QUERYSTEP_CATALOG` 改成实际路径。
+题库使用获准展示且能对齐该 run 的版本。每题的 `source_question_id` 与有序 `source_kcs` 要和 run 的映射一致，并且题目要在 `calibration.json` 的训练支持名单内。项目自带的原创题库默认走规则。本机已准备好 `artifacts/dbe-sql-approved.json`。如果需要从获准使用的原始 ZIP 和对应预处理产物重新生成，可用 `python -m course_content.import_dbe --authorized --demo-context --output artifacts/dbe-sql-approved.json`。
 
-在 Mac 的项目根目录先运行 `python -m course_content.check_catalog --run artifacts/epikt-dbe-fold0 --catalog artifacts/dbe-sql-approved.json`。预检只核对文件、映射和准入报告。模型实际加载在 GPU 服务启动时验证。
+在 Mac 的项目根目录预检并启动后端。下面的命令使用课程提示完成本地验证。启用 Gemini 时，按 [操作指南](OPERATIONS.md) 载入本地 `.env`。
+
+```bash
+conda activate querystep
+export QUERYSTEP_EPIKT_RUN="$PWD/artifacts/epikt-dbe-fold0"
+export QUERYSTEP_CATALOG="$PWD/artifacts/dbe-sql-approved.json"
+python -m course_content.check_catalog --run "$QUERYSTEP_EPIKT_RUN" --catalog "$QUERYSTEP_CATALOG"
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+Mac 本地部署可直接跳到本节的前端启动命令。若选择在 GPU 服务器部署 API，将同版本的应用源码和获准题库同步到该服务器。
 
 如果后端也部署在 AutoDL 并启用 Gemini，用私有 SSH 文件传输把 Mac 已验证的 `.env` 复制到 AutoDL 的 QueryStep 根目录，或从 `.env.example` 创建后填写 Base URL、API Key 和模型 ID。GitHub 仓库只包含 `.env.example`。复制后执行 `chmod 600 .env`，在 AutoDL 上验证 Gemini 服务可达性。研究题的外部辅导配置见 [操作指南](OPERATIONS.md)。
 
@@ -229,7 +239,7 @@ python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ssh -N -L 8000:127.0.0.1:8000 YOUR_USER@YOUR_GPU_HOST
 ```
 
-保持上述连接，在 Mac 的另一个终端启动前端。
+在 Mac 的另一个终端启动前端。若 API 部署在 GPU 服务器，保持上述 SSH 连接。
 
 ```bash
 curl -fsS http://127.0.0.1:8000/healthz
