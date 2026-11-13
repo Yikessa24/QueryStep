@@ -50,6 +50,10 @@ class ExperimentRequest(BaseModel):
         return self
 
 
+class TransferAnswer(BaseModel):
+    option: int = Field(strict=True, ge=0, le=3)
+
+
 MemorySummary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
 
 
@@ -135,25 +139,26 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
         app.state.diagnostics = None
         app.state.diagnostics_reason = "disabled"
         if os.environ.get("QUERYSTEP_DIAGNOSTICS_ENABLED") == "1":
-            app.state.diagnostics_reason = "model_unavailable"
-            if tutoring.model:
-                try:
-                    from api.diagnostics import Diagnostics
+            try:
+                from api.diagnostics import Diagnostics
 
-                    checkpoint = os.environ.get("QUERYSTEP_DIAGNOSIS_CHECKPOINTS")
-                    diagnostics = Diagnostics(app.state.practice, Path(checkpoint) if checkpoint else None)
-                    await diagnostics.start()
-                    app.state.diagnostics = diagnostics
-                    app.state.diagnostics_reason = None
-                except Exception as error:
-                    app.state.diagnostics_reason = "startup_failed"
-                    logger.warning("Diagnostics startup failed (%s)", type(error).__name__)
+                checkpoint = os.environ.get("QUERYSTEP_DIAGNOSIS_CHECKPOINTS")
+                explanation_model = os.environ.get("QUERYSTEP_EXPLANATION_MODEL", "gemini-3-flash").strip()
+                diagnostics = Diagnostics(app.state.practice, Path(checkpoint) if checkpoint else None,
+                                          explanation_model=explanation_model or None)
+                await diagnostics.start()
+                app.state.diagnostics = diagnostics
+                app.state.diagnostics_reason = None
+            except Exception as error:
+                app.state.diagnostics_reason = "startup_failed"
+                logger.warning("Diagnostics startup failed (%s)", type(error).__name__)
         try:
             yield
         finally:
             if app.state.diagnostics:
                 await app.state.diagnostics.close()
             if chat:
+                await chat.aclose()
                 chat.close()
             if scoring:
                 scoring.close()
@@ -252,20 +257,24 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
             if len(header) > 10 or not header.isascii() or not header.isdecimal():
                 raise HTTPException(422, "事件序号无效。")
             after_seq = int(header)
-        initial = diagnostics.events(user, run_id, after_seq)
+        diagnostics.events(user, run_id, after_seq)
 
         async def stream():
             sequence = after_seq
-            status, events = initial
-            while not await request.is_disconnected():
-                for event in events:
-                    sequence = event["seq"]
-                    yield f"id: {sequence}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if status not in ("queued", "running"):
-                    yield "event: settled\ndata: {}\n\n"
-                    return
-                await asyncio.sleep(0.5)
-                status, events = diagnostics.events(user, run_id, sequence)
+            with diagnostics.subscribe(run_id) as signal:
+                while not await request.is_disconnected():
+                    signal.clear()
+                    status, events = diagnostics.events(user, run_id, sequence)
+                    for event in events:
+                        sequence = event["seq"]
+                        yield f"id: {sequence}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    if status not in ("queued", "running"):
+                        yield "event: settled\ndata: {}\n\n"
+                        return
+                    try:
+                        await asyncio.wait_for(signal.wait(), timeout=0.5)
+                    except TimeoutError:
+                        continue
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
 
@@ -285,6 +294,18 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
         return await diagnostics_service(request).confirm(
             user, run_id, body.proposal_id, body.action, body.summary, body.idempotency_key,
         )
+
+    @app.get("/api/diagnosis/{run_id}/transfer")
+    def transfer_status(run_id: str, request: Request, user: str = Depends(learner)):
+        return diagnostics_service(request).transfer(user, run_id)
+
+    @app.post("/api/diagnosis/{run_id}/transfer")
+    def open_transfer(run_id: str, request: Request, user: str = Depends(learner)):
+        return diagnostics_service(request).transfer(user, run_id, offer=True)
+
+    @app.post("/api/diagnosis/{run_id}/transfer/answer")
+    def answer_transfer(run_id: str, body: TransferAnswer, request: Request, user: str = Depends(learner)):
+        return diagnostics_service(request).transfer(user, run_id, option=body.option)
 
     @app.get("/api/learning-memories")
     def learning_memories(request: Request, user: str = Depends(learner),

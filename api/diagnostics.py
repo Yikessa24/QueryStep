@@ -1,7 +1,7 @@
 """Persist and serve diagnostic runs without touching the grading ledger."""
 
 import asyncio
-from contextlib import AsyncExitStack, suppress
+from contextlib import AsyncExitStack, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import logging
@@ -17,9 +17,11 @@ from api.db import Base, Decision
 from api.learning_memory import (LearningMemory, active_memories, confirmation_graph,
                                  resume_confirmation, view, wait_for_confirmation)
 from course_content.sql_fixtures import FIXTURES, GROUPING_FIXTURE, JOIN_FIXTURE
+from course_content.transfer import EVENTS, LOANS, TRANSFER_ITEMS
 from sql_lab.client import open_lab
 from sql_lab.executor import LabError
 from tutor.diagnosis import Diagnosis, EXPLANATIONS
+from tutor.diagnosis_explanation import EXPLANATION_TIMEOUT, MAX_EXPLANATIONS, explain
 
 
 logger = logging.getLogger(__name__)
@@ -73,13 +75,28 @@ class DiagnosisExperiment(Base):
     result: Mapped[dict] = mapped_column(JSON)
 
 
+class TransferAttempt(Base):
+    __tablename__ = "diagnosis_transfer_attempts"
+
+    decision_id: Mapped[str] = mapped_column(ForeignKey("attempts.decision_id"), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("diagnosis_runs.id"))
+    item_id: Mapped[str] = mapped_column(String(80))
+    offered_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    option: Mapped[int | None]
+    correct: Mapped[bool | None]
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class Diagnostics:
-    def __init__(self, practice, checkpoint_path=None):
+    def __init__(self, practice, checkpoint_path=None, *, explanation_model=None):
         self.practice = practice
         self.db = practice.db
         self.engine = Diagnosis(practice.tutor.model)
+        self.explanation_model = explanation_model if callable(getattr(practice.tutor.model, "reply_json", None)) else None
+        self.explanations: set[asyncio.Task] = set()
         self.worker: asyncio.Task | None = None
         self.wake = asyncio.Event()
+        self.event_listeners: dict[str, set[asyncio.Event]] = {}
         self.stack = AsyncExitStack()
         database_path = self.db.engine.url.database
         self.checkpoint_path = checkpoint_path or (
@@ -113,6 +130,11 @@ class Diagnostics:
                 pass
             except Exception as error:
                 logger.warning("Diagnosis worker stopped (%s)", type(error).__name__)
+        tasks = tuple(self.explanations)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self.stack.aclose()
 
     def _owned(self, db, learner_id, run_id) -> DiagnosisRun:
@@ -138,8 +160,12 @@ class Diagnostics:
         if status == "waiting_confirmation" and run.confirmation:
             choice = run.confirmation["choice"]
             pending = {"action": choice["action"], "summary": choice["summary"]}
+        result = run.result
+        explanation = (result or {}).get("explanation")
+        if explanation and explanation["status"] == "pending" and datetime.fromisoformat(explanation["expires_at"]) <= now():
+            result = {**result, "explanation": {"status": "fallback", "reason": "interrupted"}}
         return {"run_id": run.id, "status": status, "branches": run.branches, "topic": FIXTURES[run.fixture_id].topic,
-                "result": run.result, "proposal": run.proposal if status == "waiting_confirmation" else None,
+                "result": result, "proposal": run.proposal if status == "waiting_confirmation" else None,
                 "pending_confirmation": pending}
 
     @staticmethod
@@ -158,6 +184,23 @@ class Diagnostics:
                 {"run_id": run_id, "seq": row.seq, "type": row.event_type, "time": row.created_at.isoformat() + "Z",
                  **row.payload} for row in rows
             ]
+
+    @contextmanager
+    def subscribe(self, run_id):
+        """Wake local SSE listeners after commit. The database remains the replay source."""
+        signal = asyncio.Event()
+        listeners = self.event_listeners.setdefault(run_id, set())
+        listeners.add(signal)
+        try:
+            yield signal
+        finally:
+            listeners.remove(signal)
+            if not listeners:
+                del self.event_listeners[run_id]
+
+    def _notify(self, run_id):
+        for signal in self.event_listeners.get(run_id, ()):
+            signal.set()
 
     def latest(self, learner_id, decision_id) -> dict:
         with self.db.transaction() as db:
@@ -281,6 +324,44 @@ class Diagnostics:
             db.add(DiagnosisExperiment(run_id=run_id, request_key=request_key, request_hash=digest, result=result))
             return result
 
+    def transfer(self, learner_id, run_id, *, offer=False, option=None) -> dict:
+        with self.db.transaction() as db:
+            if offer or option is not None:
+                self.practice._lock_learner(db, learner_id)
+            run = self._owned(db, learner_id, run_id)
+            eligible = (run.status in ("completed", "waiting_confirmation") and run.fixture_id == GROUPING_FIXTURE
+                        and (run.result or {}).get("mode") == "full" and self._current(db, run))
+            if not eligible:
+                if offer or option is not None:
+                    raise HTTPException(409, "当前诊断没有可提交的迁移练习。")
+                return {"available": False, "exercise": None, "feedback": None}
+            attempt = db.get(TransferAttempt, run.decision_id)
+            if attempt is not None and attempt.run_id != run.id:
+                if option is not None:
+                    raise HTTPException(409, "请使用最初打开的迁移练习。")
+                return {"available": False, "exercise": None, "feedback": None}
+            if attempt is None and offer:
+                after_id = run.result["comparison"]["after_id"]
+                after = next(row for row in run.result["observations"] if row["observation_id"] == after_id)
+                item = EVENTS if after["query_id"] == "having_gte" else LOANS
+                attempt = TransferAttempt(decision_id=run.decision_id, run_id=run.id, item_id=item.id)
+                db.add(attempt)
+            if attempt is None:
+                if option is not None:
+                    raise HTTPException(409, "请先打开迁移练习。")
+                return {"available": True, "exercise": None, "feedback": None}
+            item = TRANSFER_ITEMS[attempt.item_id]
+            if option is not None:
+                if not 0 <= option < len(item.options):
+                    raise HTTPException(422, "选项超出范围。")
+                if attempt.option is None:
+                    attempt.option, attempt.correct, attempt.submitted_at = option, option == item.correct_option, now()
+                elif attempt.option != option:
+                    raise HTTPException(409, "本次迁移练习已经提交。")
+            feedback = None if attempt.option is None else {"selected_option": attempt.option, "correct": attempt.correct,
+                                                            "correct_option": item.correct_option, "text": item.feedback}
+            return {"available": True, "exercise": item.public(), "feedback": feedback}
+
     def memories(self, learner_id, topic=None, *, limit=20, offset=0) -> list[dict]:
         with self.db.transaction() as db:
             query = active_memories(learner_id)
@@ -292,6 +373,32 @@ class Diagnostics:
 
     def relevant_memories(self, learner_id, topic) -> list[dict]:
         return self.memories(learner_id, topic, limit=2)
+
+    async def _explain(self, run_id, learner_id, token, topic, message, result):
+        try:
+            with self.db.transaction() as db:
+                run = self._owned(db, learner_id, run_id)
+                if not self._current(db, run) or run.status not in ("completed", "waiting_confirmation"):
+                    return
+            memories = self.relevant_memories(learner_id, topic)
+            detail = await explain(self.practice.tutor.model, self.explanation_model, message, result, memories)
+            with self.db.transaction() as db:
+                self.practice._lock_learner(db, learner_id)
+                run = self._owned(db, learner_id, run_id)
+                if (run.execution_token != token or run.status not in ("completed", "waiting_confirmation")
+                        or not self._current(db, run)):
+                    return
+                for record in memories:
+                    if record["memory_id"] in detail.get("memory_ids", ()):
+                        memory = db.get(LearningMemory, record["memory_id"])
+                        if memory is None or memory.deleted_at is not None or memory.version != record["version"]:
+                            detail = {"status": "fallback", "reason": "memory_changed", "elapsed_ms": detail["elapsed_ms"]}
+                            break
+                run.result = {**run.result, "explanation": detail}
+                self._event(db, run_id, "explanation_finished", status=detail["status"])
+            self._notify(run_id)
+        except (HTTPException, SQLAlchemyError) as error:
+            logger.warning("Diagnosis explanation not published (%s)", type(error).__name__)
 
     def change_memory(self, learner_id, memory_id, *, summary=None, version=None) -> dict:
         with self.db.transaction() as db:
@@ -406,7 +513,7 @@ class Diagnostics:
                 run.result = result
                 run.proposal = proposal
                 run.status = "waiting_confirmation" if proposal else "completed"
-                if result["mode"] != "reviewed_hint":
+                if result.get("sources") or result.get("comparison"):
                     self._event(db, run.id, "evidence_verified", mode=result["mode"])
                 self._event(db, run.id, "waiting_for_confirmation" if proposal else "run_finished", status=run.status)
             return True
@@ -425,6 +532,7 @@ class Diagnostics:
                     await asyncio.wait_for(self.wake.wait(), timeout=1)
                 continue
             run_id, learner_id, token, message, fixture_id = claim
+            self._notify(run_id)
             topic = FIXTURES[fixture_id].topic
             try:
                 if not self._publish(run_id, learner_id, token):
@@ -436,12 +544,11 @@ class Diagnostics:
             async def progress(branch, status):
                 if not self._publish(run_id, learner_id, token, branch=branch, branch_status=status):
                     raise LabError("inactive_run")
+                self._notify(run_id)
 
             try:
-                async with asyncio.timeout(40):
-                    records = self.relevant_memories(learner_id, topic)
-                    result = await self.engine.run(message, progress=progress, fixture_id=fixture_id,
-                                                   memories=records)
+                result = await self.engine.run(message, progress=progress, fixture_id=fixture_id,
+                                               strategy="evidence_first")
             except Exception as error:
                 logger.warning("SQL diagnosis failed (%s)", type(error).__name__)
                 result = {"mode": "reviewed_hint", "summary": EXPLANATIONS[
@@ -462,7 +569,16 @@ class Diagnostics:
                     logger.warning("Memory proposal checkpoint failed (%s)", type(error).__name__)
                     proposal = None
             try:
-                self._publish(run_id, learner_id, token, result=result, proposal=proposal)
+                if result["mode"] == "full" and self.explanation_model:
+                    detail = ({"status": "pending", "expires_at": (now() + timedelta(seconds=EXPLANATION_TIMEOUT + 1)).isoformat()}
+                              if len(self.explanations) < MAX_EXPLANATIONS else {"status": "fallback", "reason": "busy"})
+                    result = {**result, "explanation": detail}
+                published = self._publish(run_id, learner_id, token, result=result, proposal=proposal)
+                self._notify(run_id)
+                if published and result.get("explanation", {}).get("status") == "pending":
+                    task = asyncio.create_task(self._explain(run_id, learner_id, token, topic, message, result))
+                    self.explanations.add(task)
+                    task.add_done_callback(self.explanations.discard)
             except SQLAlchemyError as error:
                 logger.warning("Diagnosis result unavailable (%s)", type(error).__name__)
 
@@ -481,8 +597,12 @@ def migrate(engine):
         if connection.scalar(select(revisions.c.id).where(revisions.c.id == revision)) is None:
             DiagnosisExperiment.__table__.create(connection, checkfirst=True)
             connection.execute(revisions.insert().values(id=revision))
+        revision = "diagnostics_003"
+        if connection.scalar(select(revisions.c.id).where(revisions.c.id == revision)) is None:
+            TransferAttempt.__table__.create(connection, checkfirst=True)
+            connection.execute(revisions.insert().values(id=revision))
         for table in (DiagnosisRun.__table__, DiagnosisEvent.__table__, LearningMemory.__table__,
-                      DiagnosisExperiment.__table__):
+                      DiagnosisExperiment.__table__, TransferAttempt.__table__):
             actual = {column["name"] for column in inspect(connection).get_columns(table.name)}
             if not set(table.columns.keys()) <= actual:
                 raise RuntimeError(f"Database table {table.name} needs a migration.")

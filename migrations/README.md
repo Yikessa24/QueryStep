@@ -12,4 +12,8 @@
 
 增量创建 `diagnosis_experiments`，以 `(run_id, request_key)` 为主键持久保存参数实验的幂等结果。重复请求读取已保存的观察，使用同键提交其他参数时返回 `409`。迁移无需重写现有记录。
 
+## `diagnostics_003`
+
+增量创建 `diagnosis_transfer_attempts`。原错题的 `decision_id` 保证每道错题只有一份迁移测量，`run_id` 记录触发练习的诊断。打开时冻结题目版本与时间，提交时保存首次选项、判分和时间。原 `attempts` 表只作为归属关联，迁移作答写入独立表。
+
 升级前保留数据库和 checkpoint 备份。停用 `QUERYSTEP_DIAGNOSTICS_ENABLED` 可回到原练习流程，同时保留新增表供之后恢复。部署迁移使用单个启动实例。SQLite 路径已做测试，PostgreSQL 多实例部署需另验收。

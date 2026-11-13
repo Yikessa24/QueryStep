@@ -1,12 +1,16 @@
 import { FormEvent, useEffect, useState } from "react";
+import TransferExercise from "./TransferExercise";
 
 type Observation = { observation_id: string; sql: string; parameters: Record<string, number>;
   columns: string[]; rows: (string | number | null)[][]; row_count: number };
 type Comparison = { before_id: string; after_id: string; removed_keys: string[]; added_keys: string[];
   changed_keys: string[]; before_row_count: number; after_row_count: number };
 type Evidence = { observations: Observation[]; comparison: Comparison | null };
-type Result = Evidence & { summary: string; mode: string; sources: { id: string; title: string; url: string }[];
+type Explanation = { status: "pending" | "ready" | "fallback"; text?: string; question?: string;
+  source_id?: string; memory_ids?: string[] };
+type Result = Evidence & { summary: string; mode: string; sources: { id: string; title: string; url: string; text?: string }[];
   memory_ids?: string[];
+  explanation?: Explanation;
   trace?: Record<string, { tool: string }[]> };
 type ConfirmationAction = "confirm" | "edit" | "skip";
 type Run = { run_id: string; status: string; branches: Record<string, string>; result: Result | null;
@@ -19,6 +23,7 @@ const statuses: Record<string, string> = {
   queued: "等待运行", running: "正在诊断…", completed: "诊断完成", failed: "诊断失败，可以重试。",
   waiting_confirmation: "诊断完成，学习记录待确认。",
   cancelled: "诊断已取消。", stale: "练习已更新。", ok: "已找到证据", no_evidence: "未找到足够证据",
+  needs_input: "请选择实验条件", failed_branch: "暂时不可用",
 };
 
 function ExperimentResults({ evidence, join }: { evidence: Evidence; join: boolean }) {
@@ -65,6 +70,7 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
   const runId = run?.run_id;
   const proposal = run?.proposal;
   const pending = run?.pending_confirmation;
+  const explanation = run?.result?.explanation;
   const join = topic === "join";
 
   useEffect(() => {
@@ -117,6 +123,30 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
     source.onerror = switchToPolling;
     return () => { active = false; source.close(); clearTimeout(timer); };
   }, [running, runId, request]);
+
+  useEffect(() => {
+    if (running || !runId || explanation?.status !== "pending") return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = performance.now() + 6500;
+    async function checkExplanation() {
+      try {
+        const refreshed = await request<Run>(`/api/diagnosis/${runId}`);
+        if (!active) return;
+        if (refreshed.result?.explanation?.status !== "pending") {
+          setRun((current) => current && current.run_id === runId && current.result && refreshed.result
+            ? { ...current, result: { ...current.result, explanation: refreshed.result.explanation } } : current);
+          return;
+        }
+      } catch { /* The evidence and controls already on screen remain usable. */ }
+      if (!active) return;
+      if (performance.now() < deadline) timer = setTimeout(checkExplanation, 400);
+      else setRun((current) => current && current.run_id === runId && current.result
+        ? { ...current, result: { ...current.result, explanation: { status: "fallback" } } } : current);
+    }
+    timer = setTimeout(checkExplanation, 400);
+    return () => { active = false; clearTimeout(timer); };
+  }, [running, runId, explanation?.status, request]);
 
   async function start(event: FormEvent) {
     event.preventDefault();
@@ -188,9 +218,9 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
     </form>
     {error && <p className="error" role="alert">{error}</p>}
     {run && <div role="status">
-      <p>{statuses[run.status]}</p>
+      <p>{run.status === "completed" && run.result?.mode === "clarify" ? "请确认实验条件" : statuses[run.status]}</p>
       {Object.entries(run.branches).map(([branch, status]) =>
-        <span className="citation" key={branch}>{branchTitles[branch]} · {statuses[status] ?? status}</span>)}
+        <span className="citation" key={branch}>{branchTitles[branch]} · {statuses[status === "failed" ? "failed_branch" : status] ?? status}</span>)}
     </div>}
     {running && <button type="button" className="secondary" onClick={async () => {
       try {
@@ -202,10 +232,24 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
     {result && <>
       <p>{result.summary}</p>
       {!!result.memory_ids?.length && <p>本轮诊断读取了此前确认的相关学习记录。</p>}
-      {result.mode !== "full" && <p>本轮仅展示已取得的证据或课程提示。</p>}
+      {result.mode !== "full" && result.mode !== "clarify" && <p>本轮仅展示已取得的证据或课程提示。</p>}
       {result.sources.length > 0 && <ul>{result.sources.map((source) =>
-        <li key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul>}
+        <li key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
+          {source.text && <p>{source.text}</p>}</li>)}</ul>}
       {result.observations.length > 0 && <ExperimentResults evidence={result} join={join} />}
+      {explanation?.status === "pending" && <p className="tutor-thinking" role="status">
+        <span className="tutor-thinking-dots" aria-hidden="true"><span /><span /><span /></span>
+        Gemini 正在补充讲解…
+      </p>}
+      {explanation?.status === "ready" && <section aria-label="Gemini 补充讲解">
+        <h3>Gemini 补充讲解 · 本轮诊断</h3>
+        <p>{explanation.text}</p>
+        <p>{explanation.question}</p>
+        {result.sources.filter((source) => source.id === explanation.source_id).map((source) =>
+          <a key={source.id} href={source.url} target="_blank" rel="noreferrer">讲解依据 · {source.title}</a>)}
+        {!!explanation.memory_ids?.length && <p>本次讲解参考了你确认过的复习要点。</p>}
+      </section>}
+      {explanation?.status === "fallback" && <p>本轮可根据上方课程依据和 SQL 结果继续练习。</p>}
       <form className="diagnosis-controls" onSubmit={tryExperiment}>
         {!join && <><label>筛选条件 <select value={operator} disabled={sending} onChange={(event) => {
           setOperator(event.target.value);
@@ -221,6 +265,7 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
         <button disabled={sending}>{join ? "把条件移到 WHERE 并比较" : "比较结果"}</button>
       </form>
       {experiment && <ExperimentResults evidence={experiment} join={join} />}
+      {runId && !join && result.mode === "full" && <TransferExercise key={runId} runId={runId} request={request} />}
       {result.trace && <details><summary>查看诊断轨迹</summary>
         {Object.entries(result.trace).map(([branch, steps]) => <p key={branch}>
           {branchTitles[branch]} · {steps.map((step) => step.tool).join(" → ") || "未执行工具"}

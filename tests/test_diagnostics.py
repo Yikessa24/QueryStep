@@ -9,7 +9,8 @@ from time import monotonic, sleep
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from course_content.sql_fixtures import GROUPING_VARIANT, JOIN_FIXTURE, JOIN_VARIANT
+from course_content.sql_fixtures import GROUPING_FIXTURE, GROUPING_VARIANT, JOIN_FIXTURE, JOIN_VARIANT
+from tutor.diagnosis_intent import ExperimentIntent, route_experiment
 
 
 class ToolModel:
@@ -56,8 +57,93 @@ class ToolModel:
         }}]}
 
 
+class ExperimentIntentTest(unittest.TestCase):
+    def test_only_one_supported_condition_is_executed(self):
+        for question, expected in (
+            ("运行 HAVING COUNT(*) ＞＝ ２。", ExperimentIntent("having_gte", 2)),
+            ("严格大于 1，也就是 HAVING > 1。", ExperimentIntent("having_gt", 1)),
+            ("至少 0 条。", ExperimentIntent("having_gte", 0)),
+            ("用 COUNT(*) > 50。", ExperimentIntent("having_gt", 50)),
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(route_experiment(question, "aggregate"), expected)
+
+    def test_invalid_and_ambiguous_requests_require_confirmation(self):
+        for question in (
+            "为什么少了一组？", "HAVING > 1 还是 HAVING >= 1？", "HAVING > 51", "HAVING >= -1",
+            "HAVING > 1.5", "HAVING >= abc", "HAVING > 1 + 2", "HAVING > 1 AND score < 5",
+            "HAVING SUM(amount) > 2", "HAVING COUNT(amount) > 2", "HAVING COUNT(*) = 2",
+            "不要执行 HAVING > 1", "不大于 1", "HAVING >> 1", "HAVING COUNT(*) BETWEEN 1 AND 2",
+        ):
+            with self.subTest(question=question):
+                self.assertIsNotNone(route_experiment(question, "aggregate").clarification)
+        for question in ("条件位置会影响什么？", "请对比 INNER JOIN 的 ON 和 WHERE",
+                         "用 status = 1 比较 ON 和 WHERE", "用 status != 'paid' 比较 ON 和 WHERE"):
+            with self.subTest(question=question):
+                self.assertIsNotNone(route_experiment(question, "join").clarification)
+
+
 @unittest.skipUnless(importlib.util.find_spec("langgraph"), "Install diagnostics dependencies.")
 class DiagnosisGraphTest(unittest.IsolatedAsyncioTestCase):
+    async def test_bounded_explanation_selects_only_verified_evidence(self):
+        from tutor.diagnosis import Diagnosis
+        from tutor.diagnosis_explanation import explain
+
+        evidence = await Diagnosis(None).run("用 HAVING >= 1 验证。", strategy="evidence_first")
+        model = AsyncMock()
+        model.reply_json.return_value = {"content": '{"focus":"threshold","source":1,"note":1}'}
+        notes = [{"memory_id": "hidden-id", "summary": "我常忘记等号，email example@example.com"}]
+        result = await explain(model, "test", "我不懂恰好等于的情况", evidence, notes)
+        self.assertEqual((result["status"], result["focus"], result["memory_ids"]), ("ready", "threshold", ["hidden-id"]))
+        self.assertIn("满足当前条件", result["text"])
+        prompt = str(model.reply_json.call_args.args[0])
+        self.assertNotIn("hidden-id", prompt)
+        self.assertNotIn("example@example.com", prompt)
+        self.assertIn("我常忘记等号", prompt)
+        model.reply_json.assert_awaited_once()
+        model.reply_json.return_value = {"content": '{"focus":"same_result","source":4,"note":1}'}
+        invalid = await explain(model, "test", "用 HAVING >= 1", evidence, [])
+        self.assertEqual((invalid["status"], invalid["reason"]), ("fallback", "invalid_response"))
+
+    async def test_explanation_deadline_cancels_provider_request(self):
+        from tutor.diagnosis import Diagnosis
+        from tutor.diagnosis_explanation import explain
+
+        evidence = await Diagnosis(None).run("用 HAVING > 1 验证。", strategy="evidence_first")
+        cancelled = asyncio.Event()
+
+        async def wait(*args, **kwargs):
+            try:
+                await asyncio.sleep(10)
+            finally:
+                cancelled.set()
+
+        model = AsyncMock()
+        model.reply_json.side_effect = wait
+        result = await explain(model, "test", "请解释", evidence, [], timeout=0.01)
+        self.assertEqual(result["reason"], "timeout")
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(evidence["mode"], "full")
+
+    async def test_evidence_first_uses_real_mcp_without_provider(self):
+        from tutor.diagnosis import Diagnosis
+
+        result = await Diagnosis(None).run("用 HAVING >= 1 验证。", fixture_id=GROUPING_FIXTURE,
+                                           strategy="evidence_first")
+        self.assertEqual((result["mode"], result["model_calls"]), ("full", 0))
+        self.assertEqual(result["comparison"]["after_row_count"], 4)
+        self.assertTrue(result["sources"])
+        self.assertIn("4 组变为 4 组", result["summary"])
+        self.assertEqual(result["trace"]["course"][0]["source"], "intent_router")
+
+    async def test_evidence_first_never_replaces_an_ambiguous_query(self):
+        from tutor.diagnosis import Diagnosis
+
+        result = await Diagnosis(None).run("HAVING > 1 还是 >= 1？", strategy="evidence_first")
+        self.assertEqual((result["mode"], result["model_calls"]), ("clarify", 0))
+        self.assertEqual(result["trace"]["experiment"], [])
+        self.assertTrue(result["sources"])
+
     async def test_real_mcp_observation_changes_next_tool_parameters(self):
         from tutor.diagnosis import Diagnosis
 
@@ -180,7 +266,23 @@ class DiagnosisApiTest(unittest.TestCase):
                 self.assertEqual((replay["source"], replay["chosen_item_id"], replay["comparison"]["rule_item_id"]),
                                  ("epikt", 75, 69))
                 self.assertTrue(client.get(path + "/diagnosis").json()["available"])
-                payload = {"message": "为什么不是三组？", "idempotency_key": "diagnosis-test"}
+                clarify = client.post(path + "/diagnosis", json={
+                    "message": "为什么不是三组？", "idempotency_key": "clarify-test",
+                }).raise_for_status().json()
+                clarify_path = f"/api/diagnosis/{clarify['run_id']}"
+                deadline = monotonic() + 5
+                while monotonic() < deadline:
+                    clarification = client.get(clarify_path).raise_for_status().json()
+                    if clarification["status"] == "completed":
+                        break
+                    sleep(0.05)
+                self.assertEqual(clarification["result"]["mode"], "clarify")
+                self.assertIsNone(clarification["proposal"])
+                self.assertFalse(clarification["result"]["observations"])
+                experiment_input = {"query_id": "having_gte", "min_count": 1, "idempotency_key": "experiment-1"}
+                self.assertEqual(client.post(clarify_path + "/experiment", json=experiment_input)
+                                 .raise_for_status().json()["comparison"]["after_row_count"], 4)
+                payload = {"message": "用 HAVING > 1 验证。", "idempotency_key": "diagnosis-test"}
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     first, duplicate = list(pool.map(lambda _: client.post(
                         path + "/diagnosis", json=payload,
@@ -196,6 +298,24 @@ class DiagnosisApiTest(unittest.TestCase):
                     sleep(0.05)
                 self.assertEqual(report["status"], "waiting_confirmation")
                 self.assertEqual(report["result"]["mode"], "full")
+                self.assertEqual(report["result"]["model_calls"], 0)
+                self.assertEqual(model.learning_notes, [])
+                transfer_path = run_path + "/transfer"
+                self.assertEqual(client.get(transfer_path).json(), {"available": True, "exercise": None, "feedback": None})
+                self.assertEqual(client.post(transfer_path + "/answer", json={"option": 2}).status_code, 409)
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    offered, duplicate_offer = list(pool.map(lambda _: client.post(transfer_path).raise_for_status().json(), range(2)))
+                self.assertEqual(offered, duplicate_offer)
+                self.assertEqual(offered["exercise"]["id"], "library-branches-gte@1")
+                self.assertNotIn("correct_option", offered["exercise"])
+                self.assertIsNone(offered["feedback"])
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    submitted, duplicate_answer = list(pool.map(lambda _: client.post(
+                        transfer_path + "/answer", json={"option": 2},
+                    ).raise_for_status().json(), range(2)))
+                self.assertEqual(submitted, duplicate_answer)
+                self.assertTrue(submitted["feedback"]["correct"])
+                self.assertEqual(client.post(transfer_path + "/answer", json={"option": 0}).status_code, 409)
                 stream = client.get(run_path + "/events").raise_for_status()
                 events = [json.loads(line[6:]) for line in stream.text.splitlines() if line.startswith("data: {")]
                 events = [event for event in events if "seq" in event]
@@ -204,7 +324,6 @@ class DiagnosisApiTest(unittest.TestCase):
                 resumed = client.get(run_path + "/events", headers={"Last-Event-ID": str(events[-2]["seq"])})
                 self.assertNotIn("branch_started", resumed.raise_for_status().text)
                 self.assertIn("waiting_for_confirmation", resumed.text)
-                experiment_input = {"query_id": "having_gte", "min_count": 1, "idempotency_key": "experiment-1"}
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     experiment, duplicate = list(pool.map(lambda _: client.post(
                         run_path + "/experiment", json=experiment_input,
@@ -221,6 +340,7 @@ class DiagnosisApiTest(unittest.TestCase):
                 self.assertEqual(client.get("/api/learning-memories").json(), [])
                 cookies = dict(client.cookies)
             with TestClient(app, cookies=cookies) as client:
+                self.assertEqual(client.get(transfer_path).raise_for_status().json(), submitted)
                 report = client.get(run_path).raise_for_status().json()
                 self.assertEqual(report["status"], "waiting_confirmation")
                 self.assertEqual(report["pending_confirmation"], {"action": "edit", "summary": choice["summary"]})
@@ -245,6 +365,7 @@ class DiagnosisApiTest(unittest.TestCase):
                 next_item = client.post("/api/practice/next").raise_for_status().json()
                 self.assertEqual(next_item["item"]["id"], 74)
                 self.assertEqual(client.post(run_path + "/experiment", json=experiment_input).status_code, 409)
+                self.assertEqual(client.post(transfer_path + "/answer", json={"option": 2}).status_code, 409)
                 next_path = f"/api/practice/{next_item['decision_id']}"
                 self.assertFalse(client.post(next_path + "/answer", json={
                     "option": 0, "idempotency_key": "memory-recall-graded",
@@ -259,6 +380,7 @@ class DiagnosisApiTest(unittest.TestCase):
                 self.assertEqual(model.learning_notes[-1], [])
                 client.post("/api/session?restart=true").raise_for_status()
                 self.assertEqual(client.get(run_path).status_code, 404)
+                self.assertEqual(client.get(transfer_path).status_code, 404)
                 self.assertEqual(client.get(run_path + "/events").status_code, 404)
                 self.assertEqual(client.delete(memory_path).status_code, 404)
                 for item_id, option in zip((57, 62, 63, 69, 78), (0, 1, 0, 2, 0), strict=True):
@@ -297,3 +419,53 @@ class DiagnosisApiTest(unittest.TestCase):
                     "proposal_id": report["proposal"]["proposal_id"], "action": "confirm",
                     "idempotency_key": "confirm-stale",
                 }).status_code, 409)
+
+    def test_explanation_is_published_after_evidence_and_dropped_on_next_item(self):
+        from threading import Event
+
+        from fastapi.testclient import TestClient
+
+        from api.catalog import Catalog
+        from api.main import create_app
+        from api.recommend import CalibratedScorer, Recommender
+        from tutor.agent import TutorAgent
+
+        run_dir = Path("artifacts/epikt-dbe-fold0")
+        catalog_path = Path("artifacts/dbe-sql-approved.json")
+        if not (run_dir / "test_metrics.json").is_file() or not catalog_path.is_file():
+            self.skipTest("Formal EpiKT checkpoint and authorized catalog are required.")
+        scorer = CalibratedScorer(run_dir, timeout=5)
+        self.addCleanup(scorer.close)
+        model = ToolModel()
+        started, release, replied = Event(), Event(), Event()
+
+        async def reply(*args, **kwargs):
+            started.set()
+            await asyncio.to_thread(release.wait, 2)
+            replied.set()
+            return {"content": '{"focus":"threshold","source":1,"note":0}'}
+
+        model.reply_json = AsyncMock(side_effect=reply)
+        with TemporaryDirectory() as temp, patch.dict(os.environ, {
+            "QUERYSTEP_DIAGNOSTICS_ENABLED": "1", "QUERYSTEP_EXPLANATION_MODEL": "test",
+        }):
+            app = create_app(database_url=f"sqlite:///{temp}/p1.db", catalog=Catalog.load(catalog_path),
+                             recommender=Recommender(scorer), tutor=TutorAgent(model, allow_mapped_items=True))
+            with TestClient(app) as client:
+                client.post("/api/session").raise_for_status()
+                for index, option in enumerate((1, 0, 0, 0)):
+                    item = client.post("/api/practice/next").raise_for_status().json()
+                    path = f"/api/practice/{item['decision_id']}"
+                    client.post(path + "/answer", json={"option": option, "idempotency_key": f"p1-answer-{index}"}).raise_for_status()
+                run = client.post(path + "/diagnosis", json={"message": "HAVING > 1", "idempotency_key": "p1-diagnosis"}).raise_for_status().json()
+                self.assertTrue(started.wait(3))
+                run_path = f"/api/diagnosis/{run['run_id']}"
+                before = client.get(run_path).raise_for_status().json()["result"]
+                self.assertEqual((before["mode"], before["explanation"]["status"]), ("full", "pending"))
+                self.assertEqual(before["comparison"]["removed_keys"], ["D"])
+                client.post("/api/practice/next").raise_for_status()
+                release.set()
+                self.assertTrue(replied.wait(2))
+                after = client.get(run_path).raise_for_status().json()["result"]
+                self.assertEqual(after, before)
+                self.assertEqual(client.get("/api/practice/progress").json()["total"], 4)

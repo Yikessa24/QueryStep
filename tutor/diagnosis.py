@@ -15,6 +15,7 @@ from sql_lab.client import LabClient, open_lab
 from sql_lab.contracts import Contract, ROLE_TOOLS, TOOL_CONTRACTS
 from sql_lab.executor import LabError
 from tutor.agent import _redact
+from tutor.diagnosis_intent import ExperimentIntent, route_experiment
 from tutor.provider import ChatModel
 
 
@@ -38,12 +39,14 @@ class DiagnosisState(TypedDict, total=False):
     memories: list[str]
     topic: str
     memory_ids: list[str]
+    intent: ExperimentIntent
     course_result: dict
     experiment_result: dict
     result: dict
 
 
 ProgressCallback = Callable[[str, str], Awaitable[None]]
+Strategy = Literal["evidence_first", "parallel", "single"]
 
 
 def _tool_schemas(role: str, names: set[str], fixture_id: str = GROUPING_FIXTURE) -> list[dict]:
@@ -65,11 +68,13 @@ def _tool_schemas(role: str, names: set[str], fixture_id: str = GROUPING_FIXTURE
 
 
 class Diagnosis:
-    def __init__(self, model: ChatModel, *, timeout: float = 30):
+    def __init__(self, model: ChatModel | None, *, timeout: float = 30):
         self.model = model
         self.timeout = timeout
 
     async def _reply(self, messages: list[dict], tools: list[dict], deadline: float) -> dict:
+        if self.model is None:
+            raise LabError("model_unavailable")
         remaining = deadline - monotonic()
         if remaining <= 0:
             raise TimeoutError
@@ -115,20 +120,29 @@ class Diagnosis:
                 observations.append(baseline)
                 trace.append({"tool": "run_example_query", "source": "workflow", "query_id": baseline_query})
                 messages.append({"role": "user", "content": json.dumps({"baseline_observation": baseline}, ensure_ascii=False)})
-            model_calls += 1
-            reply = await self._reply(messages, _tool_schemas(role, names, fixture_id), deadline)
-            calls = reply.get("tool_calls")
-            if not isinstance(calls, list) or len(calls) != 1:
-                raise LabError("invalid_tool_call")
-            call = calls[0]
-            name = call["function"]["name"]
-            call_id = call["id"]
-            if (call.get("type") != "function" or name not in names
-                    or not isinstance(call_id, str) or not call_id):
-                raise LabError("invalid_tool_call")
-            args = json.loads(call["function"]["arguments"])
-            if not isinstance(args, dict):
-                raise LabError("invalid_parameters")
+            intent = state.get("intent")
+            if intent is not None:
+                name = "search_course_notes" if role == "course" else "run_example_query"
+                args = {"query": state["message"][:200]} if role == "course" else {"query_id": intent.query_id}
+                if role == "experiment" and intent.min_count is not None:
+                    args["min_count"] = intent.min_count
+                step = {"tool": name, "source": "intent_router"}
+            else:
+                model_calls += 1
+                reply = await self._reply(messages, _tool_schemas(role, names, fixture_id), deadline)
+                calls = reply.get("tool_calls")
+                if not isinstance(calls, list) or len(calls) != 1:
+                    raise LabError("invalid_tool_call")
+                call = calls[0]
+                name = call["function"]["name"]
+                call_id = call["id"]
+                if (call.get("type") != "function" or name not in names
+                        or not isinstance(call_id, str) or not call_id):
+                    raise LabError("invalid_tool_call")
+                args = json.loads(call["function"]["arguments"])
+                if not isinstance(args, dict):
+                    raise LabError("invalid_parameters")
+                step = {"tool": name, "call_id": call_id}
             if role == "course":
                 if set(args) != {"query"}:
                     raise LabError("invalid_parameters")
@@ -139,7 +153,7 @@ class Diagnosis:
                 args = {"fixture_id": fixture_id, "query_id": args.get("query_id"),
                         "parameters": {"min_count": args["min_count"]} if "min_count" in args else {}}
             result = await lab.call(role, name, args, timeout=min(2, max(0.01, deadline - monotonic())))
-            trace.append({"tool": name, "call_id": call_id})
+            trace.append(step)
             if role == "course":
                 cards = result["cards"]
             else:
@@ -172,7 +186,8 @@ class Diagnosis:
         rule = valid_rules[0]
         sources = cards
         model_calls = course["model_calls"] + experiment["model_calls"]
-        if mode == "full":
+        intent = state.get("intent")
+        if mode == "full" and intent is None:
             try:
                 model_calls += 1
                 reply = await self._reply([
@@ -195,8 +210,20 @@ class Diagnosis:
             except (TimeoutError, httpx.HTTPError, ValueError, AttributeError):
                 pass
 
+        summary = EXPLANATIONS[rule]
+        if intent and intent.clarification:
+            mode, summary = "clarify", intent.clarification
+        elif intent and comparison:
+            before, after = comparison["before_row_count"], comparison["after_row_count"]
+            if intent.min_count is not None:
+                operator = "≥" if intent.query_id == "having_gte" else ">"
+                boundary = "保留" if operator == "≥" else "筛除"
+                summary = (f"分组后用 COUNT(*) {operator} {intent.min_count} 筛选，本例从 {before} 组变为 {after} 组。"
+                           f"如果某组的计数恰好等于阈值，这个条件会{boundary}该组。")
+            else:
+                summary = f"示例中，付款条件放在 ON 时有 {before} 行，移到 WHERE 时有 {after} 行。{summary}"
         return {
-            "mode": mode, "summary": EXPLANATIONS[rule], "sources": sources,
+            "mode": mode, "summary": summary, "sources": sources,
             "observations": observations, "comparison": comparison,
             "branches": {"course": course["status"], "experiment": experiment["status"]},
             "branch_failures": {name: branch["failure"] for name, branch in
@@ -204,21 +231,29 @@ class Diagnosis:
             "trace": {"course": course["trace"], "experiment": experiment["trace"]},
             "elapsed_ms_by_branch": {"course": course["elapsed_ms"], "experiment": experiment["elapsed_ms"]},
             "model_calls": model_calls,
-            "fallback_reason": None if mode == "full" else "insufficient_evidence",
+            "fallback_reason": {"full": None, "clarify": "needs_clarification"}.get(mode, "insufficient_evidence"),
             "memory_ids": state.get("memory_ids", []),
         }
 
     async def run(self, message: str, *, fixture_id: str = GROUPING_FIXTURE,
                   memories: list[dict] | None = None, progress: ProgressCallback | None = None,
-                  strategy: Literal["parallel", "single"] = "parallel") -> dict:
-        deadline = monotonic() + self.timeout
-        async with open_lab(fixture_id) as lab:
+                  strategy: Strategy = "parallel") -> dict:
+        started = monotonic()
+        evidence_first = strategy == "evidence_first"
+        budget = min(self.timeout, 2.0) if evidence_first else self.timeout
+        deadline = started + budget
+        topic = FIXTURES[fixture_id].topic
+        cleaned = _redact(message)
+        intent = route_experiment(cleaned, topic) if evidence_first else None
+        async with asyncio.timeout(budget if evidence_first else None), open_lab(fixture_id) as lab:
+            mcp_ready = monotonic()
             graph = StateGraph(DiagnosisState)
+            branch_deadline = deadline if evidence_first else deadline - 1
 
             async def course(state):
                 if progress:
                     await progress("course", "running")
-                result = await self._branch("course", state, lab, fixture_id, deadline - 1)
+                result = await self._branch("course", state, lab, fixture_id, branch_deadline)
                 if progress:
                     await progress("course", result["status"])
                 return {"course_result": result}
@@ -226,7 +261,9 @@ class Diagnosis:
             async def experiment(state):
                 if progress:
                     await progress("experiment", "running")
-                result = await self._branch("experiment", state, lab, fixture_id, deadline - 1)
+                result = ({"status": "needs_input", "trace": [], "cards": [], "observations": [],
+                           "model_calls": 0, "elapsed_ms": 0} if intent and intent.clarification
+                          else await self._branch("experiment", state, lab, fixture_id, branch_deadline))
                 if progress:
                     await progress("experiment", result["status"])
                 return {"experiment_result": result}
@@ -253,9 +290,15 @@ class Diagnosis:
                 graph.add_edge(START, "experiment")
                 graph.add_edge(["course", "experiment"], "summarize")
             graph.add_edge("summarize", END)
+            state: DiagnosisState = {"message": cleaned, "topic": topic}
+            if intent:
+                state["intent"] = intent
+            else:
+                state["memories"] = [_redact(note["summary"]) for note in memories or []]
+                state["memory_ids"] = [note["memory_id"] for note in memories or []]
             with tracing_context(enabled=False):
-                result = await graph.compile().ainvoke({"message": _redact(message), "topic": FIXTURES[fixture_id].topic,
-                    "memories": [_redact(note["summary"]) for note in memories or []],
-                    "memory_ids": [note["memory_id"] for note in memories or []]})
-        return {**result["result"], "elapsed_ms": round((monotonic() - deadline + self.timeout) * 1000),
-                "model_version": self.model.model, "workflow_version": "diagnosis-v1"}
+                result = await graph.compile().ainvoke(state)
+        return {**result["result"], "elapsed_ms": round((monotonic() - started) * 1000),
+                "mcp_startup_ms": round((mcp_ready - started) * 1000),
+                "model_version": self.model.model if self.model and not evidence_first else None,
+                "workflow_version": "diagnosis-v2" if evidence_first else "diagnosis-v1"}

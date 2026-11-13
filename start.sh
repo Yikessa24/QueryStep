@@ -10,13 +10,14 @@ frontend_port="${QUERYSTEP_FRONTEND_PORT:-5173}"
 backend_url="http://127.0.0.1:$backend_port"
 frontend_url="http://127.0.0.1:$frontend_port"
 vite_cli="$project_dir/web/node_modules/vite/bin/vite.js"
+diagnostics_enabled="${QUERYSTEP_DIAGNOSTICS_ENABLED:-0}"
 
 fail() {
     printf '%s\n' "$1" >&2
     exit 1
 }
 
-[[ -r .env ]] || fail '缺少项目根目录的 .env，请恢复本机 Gemini 配置。'
+[[ -r .env || "$diagnostics_enabled" == 1 ]] || fail '缺少项目根目录的 .env，请恢复本机 Gemini 配置。'
 [[ -f "$vite_cli" ]] || fail '缺少前端依赖，请在项目根目录运行 npm --prefix web ci。'
 command -v node >/dev/null || fail '找不到 Node.js，请安装或恢复本机 Node.js 环境。'
 [[ "$backend_port" != "$frontend_port" ]] || fail '前端和后端需要使用不同的端口。'
@@ -39,7 +40,6 @@ conda activate querystep || fail '无法激活 Conda 环境 querystep，请按�
 python -m course_content.check_catalog --run "$run_dir" --catalog "$catalog"
 
 backend_python="${QUERYSTEP_PYTHON:-python}"
-diagnostics_enabled="${QUERYSTEP_DIAGNOSTICS_ENABLED:-0}"
 
 backend_pid=
 frontend_pid=
@@ -68,9 +68,11 @@ wait_for_http() {
 }
 
 (
-    set -a
-    source ./.env
-    set +a
+    if [[ -r .env ]]; then
+        set -a
+        source ./.env
+        set +a
+    fi
     export QUERYSTEP_EPIKT_RUN="$run_dir"
     export QUERYSTEP_CATALOG="$catalog"
     export QUERYSTEP_LLM_ALLOW_MAPPED_ITEMS=1
@@ -83,9 +85,15 @@ health="$(wait_for_http "$backend_pid" "$backend_url/healthz")" ||
     fail '后端未能启动，请查看上方日志。'
 if ! python -c 'import json, sys
 status = json.load(sys.stdin)
-sys.exit(not (status.get("epikt_ready") is True and status.get("tutor_ready") is True))' <<< "$health"; then
+sys.exit(status.get("epikt_ready") is not True)' <<< "$health"; then
     printf '%s\n' "$health" >&2
-    fail 'EpiKT 或 Gemini 配置未就绪，请核对权重、题库和 .env。'
+    fail 'EpiKT 未就绪，请核对权重和题库。'
+fi
+tutor_message='Gemini 辅导已配置。'
+if ! python -c 'import json, sys
+sys.exit(json.load(sys.stdin).get("tutor_ready") is not True)' <<< "$health"; then
+    [[ "$diagnostics_enabled" == 1 ]] || fail 'Gemini 配置未就绪，请核对 .env。'
+    tutor_message='Gemini 配置未就绪，普通辅导使用审核提示。'
 fi
 if [[ "$diagnostics_enabled" == 1 ]] && ! python -c 'import json, sys
 sys.exit(json.load(sys.stdin).get("diagnostics_ready") is not True)' <<< "$health"; then
@@ -103,7 +111,7 @@ frontend_pid=$!
 wait_for_http "$frontend_pid" "$frontend_url/healthz" >/dev/null ||
     fail '前端未能连上后端，请查看上方日志。'
 
-printf '\nQueryStep 已启动，请打开 %s/\nEpiKT 已加载，Gemini 辅导已配置。按 Ctrl+C 停止前后端。\n\n' "$frontend_url"
+printf '\nQueryStep 已启动，请打开 %s/\nEpiKT 已加载。%s\n按 Ctrl+C 停止前后端。\n\n' "$frontend_url" "$tutor_message"
 while kill -0 "$backend_pid" 2>/dev/null && kill -0 "$frontend_pid" 2>/dev/null; do
     sleep 1
 done

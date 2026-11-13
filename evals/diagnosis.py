@@ -45,13 +45,15 @@ def assess(report: dict, expected: list[str], topic: str, case_id: str) -> dict:
                 query_id, min_count = AGGREGATE_OVERRIDES.get(case_id, ("having_gt", 1))
                 query_matches = (before["query_id"] == "group_counts" and after["query_id"] == query_id
                                  and after["parameters"] == {"min_count": min_count})
-    return {"verified_requested_result": bool(consistent and query_matches and comparison["removed_keys"] == expected),
+    verified = bool(consistent and query_matches and comparison["removed_keys"] == expected)
+    return {"verified_requested_result": verified,
+            "complete_diagnosis": bool(report.get("mode") == "full" and verified and cited),
             "requested_query_matched": query_matches if comparison else None,
             "evidence_consistent": consistent if comparison else None,
             "valid_course_citations": cited if sources else None}
 
 
-async def evaluate(model: ChatModel, cases, strategies: list[str], concurrency: int = 1) -> dict:
+async def evaluate(model: ChatModel | None, cases, strategies: list[str], concurrency: int = 1) -> dict:
     originals = Catalog.load(DEFAULT_CATALOG)
     legacy = TutorAgent(model, timeout=30)
     engine = Diagnosis(model)
@@ -84,7 +86,7 @@ async def evaluate(model: ChatModel, cases, strategies: list[str], concurrency: 
 
     groups = await asyncio.gather(*(evaluate_case(case) for case in cases))
     rows = [row for group in groups for row in group]
-    return {"model": model.model, "suite": "synthetic-sql-v1", "concurrency": concurrency,
+    return {"model": model.model if model else None, "suite": "synthetic-sql-v1", "concurrency": concurrency,
             "catalog_revision": originals.revision, "summary": summarize(rows), "runs": rows}
 
 
@@ -97,6 +99,8 @@ def summarize(rows: list[dict]) -> dict:
         token_counts = [call["total_tokens"] for call in calls if "total_tokens" in call]
         summary[strategy] = {
             "cases": len(group),
+            "complete_diagnosis": sum(row["complete_diagnosis"] for row in group),
+            "clarification_requested": sum(row["result"].get("mode") == "clarify" for row in group),
             "verified_requested_result": sum(row["verified_requested_result"] for row in group),
             "consistent_evidence": sum(row["evidence_consistent"] is True for row in group),
             "evidence_checked": sum(row["evidence_consistent"] is not None for row in group),
@@ -125,7 +129,7 @@ def reassess(report: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", nargs="+", choices=[row[0] for row in CASES])
-    parser.add_argument("--strategies", nargs="+", choices=["legacy", "single", "parallel"],
+    parser.add_argument("--strategies", nargs="+", choices=["legacy", "single", "parallel", "evidence_first"],
                         default=["legacy", "single", "parallel"])
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--concurrency", type=int, default=1, choices=range(1, 5))
@@ -136,14 +140,17 @@ def main() -> None:
     if args.from_report:
         report = reassess(json.loads(args.from_report.read_text(encoding="utf-8")))
     else:
-        model = ChatModel(os.environ["QUERYSTEP_LLM_BASE_URL"], os.environ["QUERYSTEP_LLM_MODEL"],
-                          os.environ.get("QUERYSTEP_LLM_API_KEY"),
-                          allow_insecure_http=os.environ.get("QUERYSTEP_LLM_ALLOW_INSECURE_HTTP") == "1")
+        model = None
+        if set(args.strategies) != {"evidence_first"}:
+            model = ChatModel(os.environ["QUERYSTEP_LLM_BASE_URL"], os.environ["QUERYSTEP_LLM_MODEL"],
+                              os.environ.get("QUERYSTEP_LLM_API_KEY"),
+                              allow_insecure_http=os.environ.get("QUERYSTEP_LLM_ALLOW_INSECURE_HTTP") == "1")
         try:
             cases = [row for row in CASES if not args.cases or row[0] in args.cases]
             report = asyncio.run(evaluate(model, cases, list(dict.fromkeys(args.strategies)), args.concurrency))
         finally:
-            model.close()
+            if model:
+                model.close()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as output:
         json.dump(report, output, ensure_ascii=False, indent=2)
