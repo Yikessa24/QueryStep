@@ -1,14 +1,17 @@
 """HTTP API for the versioned practice and tutoring workflow."""
 
 from contextlib import asynccontextmanager
+import asyncio
+import json
 import logging
 import os
 from pathlib import Path
 from pickle import UnpicklingError
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import Cookie, Depends, FastAPI, Request, Response
-from pydantic import BaseModel, Field, StringConstraints
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from api.catalog import Catalog, DEFAULT_CATALOG, GOAL
 from api.db import Database
@@ -29,6 +32,43 @@ class Submission(BaseModel):
 
 class TutorMessage(BaseModel):
     message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
+class DiagnosisRequest(TutorMessage):
+    idempotency_key: str = Field(min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+class ExperimentRequest(BaseModel):
+    query_id: Literal["having_gt", "having_gte", "join_where"]
+    min_count: int | None = Field(default=None, strict=True, ge=0, le=50)
+    idempotency_key: str = Field(min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+
+    @model_validator(mode="after")
+    def validate_parameters(self):
+        if self.query_id.startswith("having_") != (self.min_count is not None):
+            raise ValueError("A threshold is required for HAVING queries only.")
+        return self
+
+
+MemorySummary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+
+
+class ConfirmationRequest(BaseModel):
+    proposal_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    action: Literal["confirm", "edit", "skip"]
+    summary: MemorySummary | None = None
+    idempotency_key: str = Field(min_length=8, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+
+    @model_validator(mode="after")
+    def validate_edit(self):
+        if (self.action == "edit") != (self.summary is not None):
+            raise ValueError("Provide a summary exactly when editing a proposal.")
+        return self
+
+
+class MemoryEdit(BaseModel):
+    summary: MemorySummary
+    version: int = Field(strict=True, ge=1)
 
 
 def create_app(database_url=None, catalog=None, recommender=None, tutor=None) -> FastAPI:
@@ -92,9 +132,27 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
                 allow_mapped_items=os.environ.get("QUERYSTEP_LLM_ALLOW_MAPPED_ITEMS") == "1",
             )
         app.state.practice = Practice(database, configured_catalog, recommendation, tutoring)
+        app.state.diagnostics = None
+        app.state.diagnostics_reason = "disabled"
+        if os.environ.get("QUERYSTEP_DIAGNOSTICS_ENABLED") == "1":
+            app.state.diagnostics_reason = "model_unavailable"
+            if tutoring.model:
+                try:
+                    from api.diagnostics import Diagnostics
+
+                    checkpoint = os.environ.get("QUERYSTEP_DIAGNOSIS_CHECKPOINTS")
+                    diagnostics = Diagnostics(app.state.practice, Path(checkpoint) if checkpoint else None)
+                    await diagnostics.start()
+                    app.state.diagnostics = diagnostics
+                    app.state.diagnostics_reason = None
+                except Exception as error:
+                    app.state.diagnostics_reason = "startup_failed"
+                    logger.warning("Diagnostics startup failed (%s)", type(error).__name__)
         try:
             yield
         finally:
+            if app.state.diagnostics:
+                await app.state.diagnostics.close()
             if chat:
                 chat.close()
             if scoring:
@@ -127,7 +185,10 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
                     practice.recommender.scorer.supports(item) for item in practice.catalog.items.values()
                 ),
                 "tutor_ready": bool(practice.tutor.model),
-                "tutor_status": "configured" if practice.tutor.model else practice.tutor.unavailable}
+                "tutor_status": "configured" if practice.tutor.model else practice.tutor.unavailable,
+                "diagnostics_ready": request.app.state.diagnostics is not None,
+                "mcp_ready": request.app.state.diagnostics is not None,
+                "diagnostics_reason": request.app.state.diagnostics_reason}
 
     @app.post("/api/session")
     def start(request: Request, response: Response, restart: bool = False,
@@ -156,7 +217,89 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
 
     @app.post("/api/practice/{decision_id}/tutor")
     def tutor_turn(decision_id: str, body: TutorMessage, request: Request, user: str = Depends(learner)):
-        return service(request).tutor_turn(user, decision_id, body.message)
+        diagnostics = request.app.state.diagnostics
+        return service(request).tutor_turn(user, decision_id, body.message,
+                                           memory_lookup=diagnostics.relevant_memories if diagnostics else None)
+
+    def diagnostics_service(request: Request):
+        diagnostics = request.app.state.diagnostics
+        if diagnostics is None:
+            raise HTTPException(503, "SQL 诊断当前不可用。")
+        return diagnostics
+
+    @app.get("/api/practice/{decision_id}/diagnosis")
+    def latest_diagnosis(decision_id: str, request: Request, user: str = Depends(learner)):
+        diagnostics = request.app.state.diagnostics
+        if diagnostics is None:
+            return {"available": False, "run": None}
+        return diagnostics.latest(user, decision_id)
+
+    @app.post("/api/practice/{decision_id}/diagnosis", status_code=202)
+    async def start_diagnosis(decision_id: str, body: DiagnosisRequest, request: Request,
+                              user: str = Depends(learner)):
+        return await diagnostics_service(request).enqueue(user, decision_id, body.message, body.idempotency_key)
+
+    @app.get("/api/diagnosis/{run_id}")
+    def diagnosis_status(run_id: str, request: Request, user: str = Depends(learner)):
+        return diagnostics_service(request).status(user, run_id)
+
+    @app.get("/api/diagnosis/{run_id}/events")
+    async def diagnosis_events(run_id: str, request: Request, user: str = Depends(learner),
+                               after_seq: Annotated[int, Query(ge=0)] = 0):
+        diagnostics = diagnostics_service(request)
+        header = request.headers.get("Last-Event-ID", "")
+        if header:
+            if len(header) > 10 or not header.isascii() or not header.isdecimal():
+                raise HTTPException(422, "事件序号无效。")
+            after_seq = int(header)
+        initial = diagnostics.events(user, run_id, after_seq)
+
+        async def stream():
+            sequence = after_seq
+            status, events = initial
+            while not await request.is_disconnected():
+                for event in events:
+                    sequence = event["seq"]
+                    yield f"id: {sequence}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if status not in ("queued", "running"):
+                    yield "event: settled\ndata: {}\n\n"
+                    return
+                await asyncio.sleep(0.5)
+                status, events = diagnostics.events(user, run_id, sequence)
+
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
+
+    @app.post("/api/diagnosis/{run_id}/cancel")
+    def cancel_diagnosis(run_id: str, request: Request, user: str = Depends(learner)):
+        return diagnostics_service(request).cancel(user, run_id)
+
+    @app.post("/api/diagnosis/{run_id}/experiment")
+    async def run_experiment(run_id: str, body: ExperimentRequest, request: Request,
+                             user: str = Depends(learner)):
+        return await diagnostics_service(request).experiment(user, run_id, body.query_id, body.min_count,
+                                                             body.idempotency_key)
+
+    @app.post("/api/diagnosis/{run_id}/confirmation")
+    async def confirm_diagnosis(run_id: str, body: ConfirmationRequest, request: Request,
+                                user: str = Depends(learner)):
+        return await diagnostics_service(request).confirm(
+            user, run_id, body.proposal_id, body.action, body.summary, body.idempotency_key,
+        )
+
+    @app.get("/api/learning-memories")
+    def learning_memories(request: Request, user: str = Depends(learner),
+                          topic: Annotated[str | None, Query(max_length=40)] = None,
+                          limit: Annotated[int, Query(ge=1, le=50)] = 20,
+                          offset: Annotated[int, Query(ge=0)] = 0):
+        return diagnostics_service(request).memories(user, topic, limit=limit, offset=offset)
+
+    @app.patch("/api/learning-memories/{memory_id}")
+    def edit_memory(memory_id: str, body: MemoryEdit, request: Request, user: str = Depends(learner)):
+        return diagnostics_service(request).change_memory(user, memory_id, summary=body.summary, version=body.version)
+
+    @app.delete("/api/learning-memories/{memory_id}")
+    def delete_memory(memory_id: str, request: Request, user: str = Depends(learner)):
+        return diagnostics_service(request).change_memory(user, memory_id)
 
     return app
 

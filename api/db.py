@@ -71,7 +71,8 @@ class Database:
 
     def initialize(self):
         # Initial schema only. Future incompatible changes require migrations.
-        Base.metadata.create_all(self.engine)
+        Base.metadata.create_all(self.engine, tables=[Learner.__table__, Decision.__table__,
+                                                       Attempt.__table__, TutorTurn.__table__])
 
     @contextmanager
     def transaction(self):

@@ -3,3 +3,13 @@
 初始表由 `api/db.py` 创建。待答题和学生作用域内的幂等键受唯一约束保护，判分与历史版本更新在同一事务完成。后续数据库结构变化需编写版本化迁移。
 
 现有 `decisions.catalog_version` 字段保存题库内容指纹。已有仅保存版本名的旧会话，以及任何内容发生变化的旧会话，均需从界面开启新一轮。原作答仍保留在数据库中。
+
+## `diagnostics_001`
+
+开启诊断时，`api.diagnostics.migrate()` 在事务内登记版本并增量创建诊断运行、事件和学习记录表。旧有 `learners`、`decisions`、`attempts` 和 `tutor_turns` 继续使用原结构。LangGraph 的 checkpoint 使用单独 SQLite 文件，默认与本机作答数据库同目录，可通过 `QUERYSTEP_DIAGNOSIS_CHECKPOINTS` 设置路径。
+
+## `diagnostics_002`
+
+增量创建 `diagnosis_experiments`，以 `(run_id, request_key)` 为主键持久保存参数实验的幂等结果。重复请求读取已保存的观察，使用同键提交其他参数时返回 `409`。迁移无需重写现有记录。
+
+升级前保留数据库和 checkpoint 备份。停用 `QUERYSTEP_DIAGNOSTICS_ENABLED` 可回到原练习流程，同时保留新增表供之后恢复。部署迁移使用单个启动实例。SQLite 路径已做测试，PostgreSQL 多实例部署需另验收。

@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import DiagnosisPanel from "./DiagnosisPanel";
+import LearningMemories from "./LearningMemories";
 import "./style.css";
 
 type Item = { id: number; title: string; prompt: string; options: string[]; level: number; topic: string };
@@ -7,6 +9,7 @@ type Presentation = { status: "ready"; decision_id: string; item: Item; source: 
 type Finished = { status: "complete" | "blocked"; remaining: number };
 type Feedback = { decision_id: string; correct: boolean; selected_option: number; template_hint: string | null };
 type Turn = { message: string; text: string; source: "llm" | "template"; action: string;
+  memory_ids?: string[];
   citations: { id: string; title: string; url?: string }[] };
 type Progress = { total: number; correct: number; pending: Presentation | null;
   last: { presentation: Presentation; feedback: Feedback; turns: Turn[] } | null };
@@ -37,9 +40,9 @@ class ApiError extends Error {
   }
 }
 
-async function api<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, body === undefined ? undefined : {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+async function api<T>(path: string, body?: unknown, method = body === undefined ? "GET" : "POST"): Promise<T> {
+  const response = await fetch(path, {
+    method, ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -61,6 +64,7 @@ function App() {
   const [choice, setChoice] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [replay, setReplay] = useState<Replay | null>(null);
+  const [memoryRevision, setMemoryRevision] = useState(0);
   const [pendingRequest, setPendingRequest] = useState<PendingRequest | null>(null);
   const [error, setError] = useState("");
   const busy = pendingRequest !== null;
@@ -164,6 +168,8 @@ function App() {
           <h2>每道题都有下一步</h2>
           <p>练习结果会用于后续推荐。你可以关闭页面，下次继续。</p>
           <dl><dt>已作答</dt><dd>{progress.total}</dd><dt>答对</dt><dd>{progress.correct}</dd></dl>
+          {(practice || finished) && <LearningMemories key={practice?.decision_id ?? "finished"} request={api}
+            revision={memoryRevision} />}
         </aside>
         <section className="workspace">
           {error && <p className="error" role="alert">{error}</p>}
@@ -189,12 +195,16 @@ function App() {
               <form onSubmit={submit}>
                 <fieldset disabled={!!feedback || busy}>
                   <legend className="sr-only">选择答案</legend>
-                  {practice.item.options.map((option, index) => (
-                    <label className={choice === index ? "option selected" : "option"} key={index}>
-                      <input type="radio" name="answer" checked={choice === index} onChange={() => setChoice(index)} />
-                      <span className="letter">{String.fromCharCode(65 + index)}</span><span>{option}</span>
-                    </label>
-                  ))}
+                  {practice.item.options.map((option, index) => {
+                    const selected = choice === index;
+                    const incorrect = selected && feedback?.correct === false;
+                    return <label className={`option${incorrect ? " incorrect" : selected ? " selected" : ""}`} key={index}>
+                      <input type="radio" name="answer" checked={selected} onChange={() => setChoice(index)} />
+                      <span className="letter">{String.fromCharCode(65 + index)}</span>
+                      <span className="option-text">{option}</span>
+                      {incorrect && <span className="incorrect-label">答错</span>}
+                    </label>;
+                  })}
                 </fieldset>
                 {!feedback && <button disabled={choice === null || busy}>提交答案</button>}
               </form>
@@ -206,7 +216,11 @@ function App() {
                   <h2>问问助教</h2>
                   {turns.map((turn, index) => <article className="turn" key={index}>
                     <p><b>你</b> {turn.message}</p>
-                    <p><b>{turn.source === "llm" ? "LLM 助教" : "审核提示"}</b> {turn.text}</p>
+                    <p><b>{turn.source === "llm" ? "LLM 助教" : "审核提示"}</b>{" "}
+                      {turn.text.split(/(`[^`\n]+`)/).map((part, index) =>
+                        index % 2 === 0 ? part : <code key={index}>{part.slice(1, -1)}</code>)}
+                    </p>
+                    {!!turn.memory_ids?.length && <p className="citation">本轮辅导读取了已确认的学习记录</p>}
                     {turn.citations.map((source) => source.url
                       ? <a key={source.id} href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
                       : <span key={source.id} className="citation">{source.title}</span>)}
@@ -223,6 +237,8 @@ function App() {
                     <button type="submit" disabled={busy || !message.trim()}>发送</button>
                   </form>
                 </section>}
+                {!feedback.correct && <DiagnosisPanel key={practice.decision_id} decisionId={practice.decision_id} request={api}
+                  onMemorySaved={() => setMemoryRevision((value) => value + 1)} />}
                 <div className="actions">
                   <button disabled={busy} onClick={() => perform(nextItem)}>下一题</button>
                   <button className="secondary" disabled={busy} onClick={() => perform(async () => {
@@ -230,7 +246,10 @@ function App() {
                   })}>查看选题记录</button>
                 </div>
               </>}
-              {replay && <p className="notice">
+              {replay && <p className="replay">
+                {replay.source === "epikt" && typeof replay.comparison.rule_item_id === "number" &&
+                  (replay.chosen_item_id === replay.comparison.rule_item_id
+                    ? "EpiKT 与规则选了同一道题。" : "EpiKT 与规则选了不同的题。")}
                 本轮实际题号 {replay.chosen_item_id}。
                 {replay.comparison.rule_item_id === null ? "规则对照未选题。" :
                   replay.comparison.rule_item_id !== undefined && `规则对照题号 ${replay.comparison.rule_item_id}。`}

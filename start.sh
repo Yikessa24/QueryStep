@@ -38,6 +38,9 @@ conda activate querystep || fail '无法激活 Conda 环境 querystep，请按�
 
 python -m course_content.check_catalog --run "$run_dir" --catalog "$catalog"
 
+backend_python="${QUERYSTEP_PYTHON:-python}"
+diagnostics_enabled="${QUERYSTEP_DIAGNOSTICS_ENABLED:-0}"
+
 backend_pid=
 frontend_pid=
 cleanup() {
@@ -71,7 +74,8 @@ wait_for_http() {
     export QUERYSTEP_EPIKT_RUN="$run_dir"
     export QUERYSTEP_CATALOG="$catalog"
     export QUERYSTEP_LLM_ALLOW_MAPPED_ITEMS=1
-    exec python -m uvicorn api.main:app --host 127.0.0.1 --port "$backend_port"
+    export QUERYSTEP_DIAGNOSTICS_ENABLED="$diagnostics_enabled"
+    exec "$backend_python" -m uvicorn api.main:app --host 127.0.0.1 --port "$backend_port"
 ) &
 backend_pid=$!
 
@@ -82,6 +86,11 @@ status = json.load(sys.stdin)
 sys.exit(not (status.get("epikt_ready") is True and status.get("tutor_ready") is True))' <<< "$health"; then
     printf '%s\n' "$health" >&2
     fail 'EpiKT 或 Gemini 配置未就绪，请核对权重、题库和 .env。'
+fi
+if [[ "$diagnostics_enabled" == 1 ]] && ! python -c 'import json, sys
+sys.exit(json.load(sys.stdin).get("diagnostics_ready") is not True)' <<< "$health"; then
+    printf '%s\n' "$health" >&2
+    fail '诊断模块未就绪，请检查 diagnostics 依赖、数据库和 MCP 启动日志。'
 fi
 
 (

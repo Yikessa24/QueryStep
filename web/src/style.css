@@ -16,10 +16,12 @@ p{margin:.7em 0 1em}
 .eyebrow{font-size:13px;font-weight:700;color:#38604e;margin:0}
 dl{display:grid;grid-template-columns:1fr auto;gap:8px;margin:18px 0 0}
 dd{margin:0;font-weight:700}
-.question,.option span:last-child{overflow-wrap:anywhere;white-space:pre-wrap}
+.question,.option-text{overflow-wrap:anywhere;white-space:pre-wrap}
 fieldset{border:0;margin:0 0 14px;padding:0;min-inline-size:0}
 .option{display:flex;gap:10px;align-items:center;padding:13px;margin:8px 0;border:1px solid #d5dfd8;border-radius:8px;cursor:pointer}
 .option.selected{border-color:#497b68;background:#e9f4ed}
+.option.incorrect{border-color:#b56c49;background:#fff4dd;cursor:default}
+.incorrect-label{margin-left:auto;flex-shrink:0;color:#873e20;font-size:13px;font-weight:700}
 .letter{font-weight:700;color:#3c6656}
 button{padding:9px 16px;border:1px solid #214b40;border-radius:8px;background:#214b40;color:white;font:inherit;cursor:pointer}
 button:disabled{opacity:.55;cursor:default}
@@ -27,10 +29,29 @@ button.secondary{color:#214b40;background:white}
 .notice,.error{padding:10px 12px;background:#fff4dd;border-radius:8px}
 .error{background:#f9dfde;color:#772626}
 .notice.success{background:#e9f4ed}
+.replay{padding:10px 12px;background:#f3f6f3;border-radius:8px}
 .tutor{margin:20px 0;border-top:1px solid #d8e1d9;padding-top:14px}
 .tutor-form input{flex:1;min-width:0;border:1px solid #aebeb1;border-radius:8px;padding:10px;font:inherit}
 .turn{background:#f3f6f3;border-radius:8px;padding:8px 12px;margin:10px 0;overflow-wrap:anywhere}
 .turn p{margin:3px 0}
+.turn code{background:#e9f0e8;border-radius:4px;padding:1px 4px}
+.diagnosis{margin:20px 0;border-top:1px solid #d8e1d9;padding-top:14px}
+.diagnosis-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr));gap:12px;margin:12px 0}
+.diagnosis-results>div{min-width:0;border:1px solid #d8e1d9;border-radius:8px;padding:10px}
+.diagnosis-results h3{font-size:15px;margin:0}
+.diagnosis-results pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+.diagnosis-results table{width:100%;border-collapse:collapse;text-align:left}
+.diagnosis-results th,.diagnosis-results td{padding:5px 7px;border-top:1px solid #d8e1d9}
+.removed-row{background:#fff4dd;color:#873e20}
+.diagnosis-controls{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:12px 0}
+.diagnosis-controls select,.diagnosis-controls input{font:inherit}
+.diagnosis-controls input{width:5rem}
+.diagnosis-memory{margin:14px 0;padding:12px;border-radius:8px;background:#e9f0e8}
+.diagnosis-memory h3{margin:0 0 8px;font-size:16px}
+.diagnosis-memory textarea{display:block;width:100%;min-height:55px;margin:4px 0 8px;padding:8px;font:inherit}
+.learning-memories{margin-top:16px}
+.learning-memories textarea{width:100%;font:inherit}
+.learning-memories .actions{flex-wrap:wrap}
 .tutor-thinking {
   display: flex;
   align-items: center;

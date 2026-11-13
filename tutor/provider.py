@@ -1,8 +1,23 @@
 """Minimal OpenAI-compatible transport shared by the tutor and its probe."""
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from ipaddress import ip_address
 
 import httpx
+
+
+_meter: ContextVar[list[dict] | None] = ContextVar("provider_meter", default=None)
+
+
+@contextmanager
+def measure_calls():
+    calls: list[dict] = []
+    token = _meter.set(calls)
+    try:
+        yield calls
+    finally:
+        _meter.reset(token)
 
 
 def _loopback(host: str) -> bool:
@@ -50,9 +65,18 @@ class ChatModel:
             body["tool_choice"] = tool_choice
         if response_format:
             body["response_format"] = response_format
+        calls = _meter.get()
+        record = {}
+        if calls is not None:
+            calls.append(record)
         response = self.client.post("chat/completions", json=body, timeout=timeout)
         response.raise_for_status()
-        message = response.json()["choices"][0]["message"]
+        payload = response.json()
+        if calls is not None and isinstance(payload.get("usage"), dict):
+            record.update({name: count for name, count in payload["usage"].items()
+                           if name in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                           and type(count) is int and count >= 0})
+        message = payload["choices"][0]["message"]
         if not isinstance(message, dict):
             raise ValueError("Model response did not contain a message object.")
         return message

@@ -7,7 +7,7 @@ import httpx
 from api.catalog import Catalog, DEFAULT_CATALOG
 from tutor.agent import TutorAgent
 from tutor.check_provider import choose_gemini, probe
-from tutor.provider import ChatModel
+from tutor.provider import ChatModel, measure_calls
 
 
 def tool(name):
@@ -20,6 +20,20 @@ def action(name, text, sources):
 
 
 class TutorTest(unittest.TestCase):
+    def test_provider_usage_meter_records_only_supported_counts(self):
+        def handle(request):
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5, "other": "ignored"}})
+
+        model = ChatModel("https://example.invalid/v1", "test", None, transport=httpx.MockTransport(handle))
+        self.addCleanup(model.close)
+        with measure_calls() as outer:
+            self.assertEqual(model.reply([], [], 1), {"content": "ok"})
+            with measure_calls() as inner:
+                model.reply([], [], 1)
+            self.assertEqual(inner, outer)
+            self.assertEqual(outer, [{"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}])
+
     def test_two_turns_adapt_and_use_returned_tools(self):
         item = Catalog.load(DEFAULT_CATALOG).items[2]
         replies = iter([
@@ -76,6 +90,31 @@ class TutorTest(unittest.TestCase):
         item = replace(item, source_question_id=99, source_kcs=(10,))
         result = TutorAgent(object()).respond(item, "我想把题目贴给你。", [])
         self.assertEqual(result["fallback_reason"], "mapped_item_llm_disabled")
+
+    def test_select_row_count_uses_targeted_material_without_sharing_mapped_question(self):
+        item = replace(Catalog.load(DEFAULT_CATALOG).items[1], source_question_id=99,
+                       source_kcs=(10,), prompt="How many rows will SELECT title FROM private_table return?")
+        replies = iter([
+            tool("retrieve_course_notes"),
+            action("give_hint", "先检查来源表的行是否会被过滤。", ["note-select-row-count"]),
+            tool("get_worked_example"),
+            action("show_example", "水果表选一列之后仍然有三行。", ["example-select-row-count"]),
+        ])
+        requests = []
+
+        class FakeModel:
+            def reply(self, messages, tools, timeout):
+                requests.append(tuple(messages))
+                return next(replies)
+
+        agent = TutorAgent(FakeModel(), allow_mapped_items=True)
+        first = agent.respond(item, "请给个提示。", [])
+        second = agent.respond(item, "请举个例子。", [{"message": "请给个提示。", **first}])
+        self.assertEqual([first["source"], second["source"]], ["llm", "llm"])
+        self.assertIn("多少行", str(requests[0]))
+        self.assertIn("一列、三行", requests[-1][-1]["content"])
+        self.assertNotIn("private_table", str(requests))
+        self.assertIn("结果行和结果列", TutorAgent().respond(item, "请给个提示。", [])["text"])
 
     def test_provider_rejects_remote_http_without_explicit_opt_in(self):
         with self.assertRaisesRegex(ValueError, "requires HTTPS"):

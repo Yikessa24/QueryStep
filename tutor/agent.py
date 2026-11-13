@@ -12,7 +12,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.catalog import Item, TOPIC_NAMES
-from course_content.lessons import EXAMPLES, NOTES, retrieve_note
+from course_content.lessons import EXAMPLES, NOTES, lesson_key, retrieve_note, reviewed_hint
 from tutor.provider import ChatModel
 
 logger = logging.getLogger(__name__)
@@ -58,19 +58,19 @@ class TutorAgent:
 
     @staticmethod
     def _tool(name: str, item: Item) -> dict:
+        key = lesson_key(item.topic, item.prompt)
         if name == "retrieve_course_notes":
-            return retrieve_note(item.topic)
+            return retrieve_note(key)
         if name == "get_worked_example":
-            return {"id": f"example-{item.topic}", "title": "审核例题",
-                    "text": EXAMPLES[item.topic]}
+            return {"id": f"example-{key}", "title": "审核例题", "text": EXAMPLES[key]}
         raise ValueError("Tool is outside the course allowlist.")
 
     @staticmethod
     def _template(item: Item, reason: str, trace: list[dict]) -> dict:
-        return {"source": "template", "action": "give_hint", "text": item.hint,
+        return {"source": "template", "action": "give_hint", "text": reviewed_hint(item.topic, item.prompt, item.hint),
                 "citations": [], "trace": trace, "fallback_reason": reason}
 
-    def respond(self, item: Item, message: str, prior: list[dict]) -> dict:
+    def respond(self, item: Item, message: str, prior: list[dict], *, memories: list[dict] | None = None) -> dict:
         if not self.model:
             return self._template(item, self.unavailable, [])
         if item.source_question_id is not None and not self.allow_mapped_items:
@@ -78,17 +78,25 @@ class TutorAgent:
         if not self.capacity.acquire(blocking=False):
             return self._template(item, "llm_busy", [])
         try:
-            return self._respond(item, message, prior)
+            result = self._respond(item, message, prior, memories or [])
+            if result["source"] == "llm" and memories:
+                result["memory_ids"] = [record["memory_id"] for record in memories]
+            return result
         finally:
             self.capacity.release()
 
-    def _respond(self, item: Item, message: str, prior: list[dict]) -> dict:
+    def _respond(self, item: Item, message: str, prior: list[dict], memories: list[dict]) -> dict:
         trace = []
         citations = {}
         call_ids = set()
+        key = lesson_key(item.topic, item.prompt)
         context = {"topic": TOPIC_NAMES[item.topic], "hint_stage": min(len(prior) + 1, 3)}
+        if key == "select-row-count":
+            context["learning_goal"] = "区分结果行数和结果列数，重点判断查询返回多少行。"
         if item.source_question_id is None:
-            context["reviewed_hint"] = item.hint
+            context["reviewed_hint"] = reviewed_hint(item.topic, item.prompt, item.hint)
+        if memories:
+            context["confirmed_learning_notes"] = [_redact(record["summary"]) for record in memories]
         messages = [
             {"role": "system", "content":
              "你是 QueryStep 的中文 SQL 助教。根据学生回答逐步追问、提示、举例或邀请继续。"
@@ -104,7 +112,7 @@ class TutorAgent:
             messages.extend([
                 {"role": "user", "content": _redact(turn["message"])},
                 {"role": "assistant", "content": _redact(
-                    NOTES[item.topic] if item.source_question_id is not None
+                    NOTES[key] if item.source_question_id is not None
                     and turn["source"] == "template" else turn["text"]
                 )},
             ])
@@ -159,7 +167,7 @@ class TutorAgent:
             return self._template(item, "invalid_tutor_stage", trace)
         if any(source_id not in citations for source_id in output.source_ids):
             return self._template(item, "invalid_citation", trace)
-        if output.action == "show_example" and f"example-{item.topic}" not in output.source_ids:
+        if output.action == "show_example" and f"example-{lesson_key(item.topic, item.prompt)}" not in output.source_ids:
             return self._template(item, "missing_example_reference", trace)
         answer = " ".join(normalize("NFKC", item.options[item.correct_option]).casefold().split())
         text = " ".join(normalize("NFKC", output.text).casefold().split())
@@ -175,7 +183,7 @@ class TutorAgent:
                 for source in dict.fromkeys(output.source_ids)]
         return {"source": "llm", "action": output.action, "text": output.text,
                 "citations": refs, "trace": trace, "fallback_reason": None,
-                "model_version": getattr(self.model, "model", None), "prompt_version": "sql-tutor-v2"}
+                "model_version": getattr(self.model, "model", None), "prompt_version": "sql-tutor-v3"}
 
 
 def _redact(text: str) -> str:

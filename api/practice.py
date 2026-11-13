@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from api.catalog import Catalog
 from api.db import Attempt, Database, Decision, Learner, TutorTurn
 from api.recommend import Recommender
+from course_content.lessons import reviewed_hint
 
 
 class Practice:
@@ -142,9 +143,10 @@ class Practice:
             return self._feedback(attempt)
 
     def _feedback(self, attempt: Attempt) -> dict:
+        item = self.catalog.items[attempt.item_id]
         return {"decision_id": attempt.decision_id, "event_seq": attempt.event_seq,
                 "correct": attempt.correct, "selected_option": attempt.option,
-                "template_hint": self.catalog.items[attempt.item_id].hint if not attempt.correct else None}
+                "template_hint": reviewed_hint(item.topic, item.prompt, item.hint) if not attempt.correct else None}
 
     def progress(self, learner_id: str) -> dict:
         with self.db.transaction() as db:
@@ -184,7 +186,7 @@ class Practice:
             raise HTTPException(409, "请在当前错题的反馈页使用辅导。")
         return attempt
 
-    def tutor_turn(self, learner_id: str, decision_id: str, message: str) -> dict:
+    def tutor_turn(self, learner_id: str, decision_id: str, message: str, *, memory_lookup=None) -> dict:
         with self.db.transaction() as db:
             attempt = self._tutoring_attempt(db, learner_id, decision_id)
             prior = self._turns(db, decision_id)
@@ -192,7 +194,11 @@ class Practice:
             raise HTTPException(409, "已达到本题的辅导轮数，请继续练习。")
         item = self.catalog.items[attempt.item_id]
         started = monotonic()
-        result = self.tutor.respond(item, message, prior)
+        memories = memory_lookup(learner_id, item.topic) if memory_lookup else []
+        if memories:
+            result = self.tutor.respond(item, message, prior, memories=memories)
+        else:
+            result = self.tutor.respond(item, message, prior)
         result["elapsed_ms"] = round((monotonic() - started) * 1000)
         with self.db.transaction() as db:
             self._lock_learner(db, learner_id, attempt.event_seq)

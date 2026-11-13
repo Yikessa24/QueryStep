@@ -151,3 +151,33 @@ conda activate querystep
 python -m pip install -e '.[kt,api]'
 npm --prefix web ci
 ```
+
+## 6. 启用 SQL 错题诊断与学习记录
+
+在现有 Mac 环境安装一次诊断依赖。在项目根目录执行：
+
+```bash
+conda activate querystep
+python -m pip install -e '.[api,kt,diagnostics]'
+QUERYSTEP_DIAGNOSTICS_ENABLED=1 ./start.sh
+```
+
+已使用独立开发环境 `artifacts/diagnostics-venv/` 时，可以直接复用：
+
+```bash
+QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
+```
+
+打开 [QueryStep 学生端](http://127.0.0.1:5173/)，在新会话前三题依次选 **B、A、A**，第四题选 **A**。在 75 号错题反馈页点「运行诊断」，输入「为什么分组后还要检查 HAVING？请用严格大于 1 的示例。」完整诊断会展示课程依据，以及合成数据上的 **4 组 → 3 组**。选择「大于等于」，保留阈值 1，再点「比较结果」即可观察边界。若模型超时，页面会保留已经取得的证据和可用提示。仍可点击「比较结果」直接运行参数实验，或重新发起诊断。
+
+完整诊断会生成一条待确认的复习建议。可以刷新页面再确认，也可以修改后保存或跳过。侧栏的「已确认的学习记录」可以修改或删除。保留当前会话 Cookie，下次遇到相关错题时助教可读取这些记录。点击「重新开始」会创建新学习身份。实验结果和复习建议分别保存，作答计数只随正式提交变化。
+
+复现工具执行和回归测试：
+
+```bash
+python -m sql_lab.check
+python -m sql_lab.check --fixture left_join_predicate@1
+python -m unittest discover -s tests
+```
+
+扩展阶段、测试边界和评估命令见 [多 Agent 扩展开发文档](QueryStep%20多%20Agent%20扩展开发文档.md)。

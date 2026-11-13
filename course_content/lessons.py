@@ -2,6 +2,7 @@
 
 NOTES = {
     "select": "SELECT 后的表达式决定结果列，FROM 指定数据来源。",
+    "select-row-count": "先区分结果行和结果列。这个查询只选择输出列，可以从来源表逐行判断哪些行会出现在结果中。",
     "where": "WHERE 对每一行检查条件，只保留条件为真的行。先用边界值试算。",
     "conditions": "AND 要求两项同时成立，OR 只要求至少一项成立。用括号明确分组。",
     "distinct": "DISTINCT 对整个结果行去重。选择多列时，逐列相同才算重复。",
@@ -13,6 +14,7 @@ NOTES = {
 
 EXAMPLES = {
     "select": "水果表有 name 和 weight 两列。只选 name 时，结果里只有一列。",
+    "select-row-count": "水果表有苹果、梨、桃三条记录，每条都有 name 和 weight。执行 SELECT name FROM fruit 后，结果有一列、三行。",
     "where": "三个气温值是 12、18、20。筛选严格低于 18 的记录时，只保留 12。",
     "conditions": "记录甲只满足第一个条件，记录乙同时满足两个。AND 留下乙，OR 两条都留下。",
     "distinct": "三个结果行是 (蓝, 大)、(蓝, 大)、(蓝, 小)。去重后有两个结果行。",
@@ -24,6 +26,7 @@ EXAMPLES = {
 
 DOCS = {
     "select": "tutorial-select.html",
+    "select-row-count": "tutorial-select.html",
     "where": "tutorial-select.html",
     "conditions": "functions-logical.html",
     "distinct": "queries-select-lists.html#QUERIES-DISTINCT",
@@ -32,6 +35,17 @@ DOCS = {
     "join": "tutorial-join.html",
     "subquery": "functions-subquery.html",
 }
+
+
+def lesson_key(topic: str, prompt: str) -> str:
+    if topic == "select" and " ".join(prompt.lower().split()).startswith("how many rows "):
+        return "select-row-count"
+    return topic
+
+
+def reviewed_hint(topic: str, prompt: str, default: str) -> str:
+    key = lesson_key(topic, prompt)
+    return default if key == topic else NOTES[key]
 
 
 def retrieve_note(topic: str) -> dict:
