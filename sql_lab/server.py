@@ -2,6 +2,9 @@
 
 import argparse
 import asyncio
+import logging
+from pathlib import Path
+import sqlite3
 from uuid import uuid4
 
 from mcp.server.lowlevel import Server
@@ -11,16 +14,17 @@ from pydantic import ValidationError
 
 from course_content.diagnosis_cards import search
 from course_content.sql_fixtures import FIXTURES, GROUPING_FIXTURE
-from sql_lab.contracts import (CompareRequest, FixtureRequest, QueryRequest, SearchRequest, TOOL_CONTRACTS,
-                               TRANSFER_CONTRACT, TRANSFER_SCOPE, TRANSFER_TOOL, TransferRequest)
+from sql_lab.coach import experiment, search as coach_search
+from sql_lab.contracts import (COACH_SCOPE, TRANSFER_SCOPE, CoachExperimentRequest, CompareRequest, FixtureRequest,
+                               KnowledgeRequest, QueryRequest, SearchRequest, TransferRequest, contracts_for)
 from sql_lab.executor import LabError, compare, describe, execute
 from sql_lab.transfer import build_transfer
 
 
-def create_server(fixture_id: str) -> Server:
+def create_server(fixture_id: str, index=None) -> Server:
     server = Server("querystep-sql-lab")
     observations: dict[str, dict] = {}
-    contracts = {TRANSFER_TOOL: TRANSFER_CONTRACT} if fixture_id == TRANSFER_SCOPE else TOOL_CONTRACTS
+    contracts = contracts_for(fixture_id)
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -41,6 +45,10 @@ def create_server(fixture_id: str) -> Server:
 
         if isinstance(request, TransferRequest):
             return build_transfer(**request.model_dump())
+        if isinstance(request, KnowledgeRequest):
+            return await asyncio.to_thread(coach_search, request, index)
+        if isinstance(request, CoachExperimentRequest):
+            return experiment(request)
         if isinstance(request, SearchRequest):
             return {"cards": search(request.query, request.topic, request.top_k)}
         if isinstance(request, CompareRequest):
@@ -64,16 +72,37 @@ def create_server(fixture_id: str) -> Server:
     return server
 
 
-async def serve(fixture_id: str) -> None:
-    server = create_server(fixture_id)
+async def serve(fixture_id: str, index=None) -> None:
+    server = create_server(fixture_id, index)
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture", choices=(*FIXTURES, TRANSFER_SCOPE), default=GROUPING_FIXTURE)
-    asyncio.run(serve(parser.parse_args().fixture))
+    parser.add_argument("--fixture", choices=(*FIXTURES, TRANSFER_SCOPE, COACH_SCOPE), default=GROUPING_FIXTURE)
+    parser.add_argument("--knowledge-index", type=Path)
+    parser.add_argument("--embedding-model", type=Path)
+    args = parser.parse_args()
+    index = None
+    if args.fixture == COACH_SCOPE and args.knowledge_index:
+        from course_content.knowledge_index import Embedder, KnowledgeIndex
+
+        embedder = None
+        if args.embedding_model:
+            try:
+                embedder = Embedder(str(args.embedding_model.resolve()))
+            except (ImportError, OSError, ValueError, RuntimeError) as error:
+                logging.warning("Coach embedding unavailable (%s)", type(error).__name__)
+        try:
+            index = KnowledgeIndex(args.knowledge_index, embedder)
+        except (ImportError, OSError, ValueError, KeyError, RuntimeError, TypeError, sqlite3.Error) as error:
+            logging.warning("Coach knowledge unavailable (%s)", type(error).__name__)
+    try:
+        asyncio.run(serve(args.fixture, index))
+    finally:
+        if index:
+            index.close()
 
 
 if __name__ == "__main__":

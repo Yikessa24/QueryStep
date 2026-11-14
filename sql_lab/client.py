@@ -10,8 +10,8 @@ from mcp.client.stdio import stdio_client
 from pydantic import ValidationError
 
 from course_content.sql_fixtures import FIXTURES
-from sql_lab.contracts import (CompareRequest, FixtureRequest, QueryRequest, ROLE_TOOLS, TOOL_CONTRACTS,
-                               TRANSFER_CONTRACT, TRANSFER_SCOPE, TRANSFER_TOOL)
+from sql_lab.contracts import (COACH_SCOPE, TRANSFER_SCOPE, CoachExperimentRequest, CompareRequest,
+                               FixtureRequest, QueryRequest, ROLE_TOOLS, contracts_for)
 from sql_lab.executor import LabError
 
 
@@ -19,7 +19,7 @@ class LabClient:
     def __init__(self, session: ClientSession, fixture_id: str):
         self.session = session
         self.fixture_id = fixture_id
-        self.contracts = {TRANSFER_TOOL: TRANSFER_CONTRACT} if fixture_id == TRANSFER_SCOPE else TOOL_CONTRACTS
+        self.contracts = contracts_for(fixture_id)
 
     async def call(self, role: str, name: str, arguments: dict, *, timeout: float = 2) -> dict:
         if name not in ROLE_TOOLS.get(role, ()) or name not in self.contracts:
@@ -50,17 +50,21 @@ class LabClient:
         if isinstance(request, CompareRequest) and (validated.fixture_id != self.fixture_id
                 or validated.before_id != request.before_id or validated.after_id != request.after_id):
             raise LabError("invalid_tool_result")
+        if isinstance(request, CoachExperimentRequest) and any(
+            getattr(validated, key) != value for key, value in request.model_dump().items()
+        ):
+            raise LabError("invalid_tool_result")
         return validated.model_dump()
 
 
 @asynccontextmanager
-async def open_lab(fixture_id: str):
-    if fixture_id not in FIXTURES and fixture_id != TRANSFER_SCOPE:
+async def open_lab(fixture_id: str, *, knowledge_args=()):
+    if fixture_id not in FIXTURES and fixture_id not in {TRANSFER_SCOPE, COACH_SCOPE}:
         raise LabError("unknown_fixture")
     parameters = StdioServerParameters(command=sys.executable,
-                                       args=["-m", "sql_lab.server", "--fixture", fixture_id])
+                                       args=["-m", "sql_lab.server", "--fixture", fixture_id, *knowledge_args])
     async with stdio_client(parameters) as (read, write), ClientSession(read, write) as session:
-        async with asyncio.timeout(8):
+        async with asyncio.timeout(25 if fixture_id == COACH_SCOPE else 8):
             await session.initialize()
             discovered = (await session.list_tools()).tools
         tools = {tool.name: tool for tool in discovered}

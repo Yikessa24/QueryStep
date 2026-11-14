@@ -570,3 +570,7 @@ python -m evals.having_review score --key artifacts/having-review-new/review-key
 自动验收包括授权题库 24/24 映射、5,000 个变式的唯一选项检查、确定性 LEFT JOIN 行数与 NULL 核对，以及经真实 MCP 的 24 题出题和判分。浏览器用原 EpiKT 权重分别走通 HAVING 和 LEFT JOIN。这里的覆盖率和判分检查衡量系统行为，学生能否通过变式改善学习表现仍属第 16.3 节的实验问题。
 
 工具输入输出约束和 SQL 授权策略参考官方接口。 [MCP Tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) · [SQLite authorizer](https://www.sqlite.org/c3ref/set_authorizer.html)
+
+## 18. 下一阶段 · 自主错题教练与课程知识库
+
+[开发方案](QueryStep%20自主错题教练与课程知识库开发方案.md)统一描述课程语料建设、混合检索、Agent 自主规划和分阶段验收。方案以本节之前记录的功能与实测结果为基线。

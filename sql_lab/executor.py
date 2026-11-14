@@ -38,6 +38,10 @@ def execute(fixture_id: str, query_id: str, parameters: dict, *, timeout: float 
     fixture = FIXTURES.get(fixture_id)
     if fixture is None:
         raise LabError("unknown_fixture")
+    return execute_fixture(fixture, query_id, parameters, timeout=timeout)
+
+
+def execute_fixture(fixture, query_id: str, parameters: dict, *, timeout: float = 1.0) -> dict:
     if query_id not in fixture.queries:
         raise LabError("unknown_query")
     if query_id not in PARAMETERIZED_QUERIES:

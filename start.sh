@@ -10,7 +10,8 @@ frontend_port="${QUERYSTEP_FRONTEND_PORT:-5173}"
 backend_url="http://127.0.0.1:$backend_port"
 frontend_url="http://127.0.0.1:$frontend_port"
 vite_cli="$project_dir/web/node_modules/vite/bin/vite.js"
-diagnostics_enabled="${QUERYSTEP_DIAGNOSTICS_ENABLED:-0}"
+coach_enabled="${QUERYSTEP_COACH_ENABLED:-0}"
+diagnostics_enabled="${QUERYSTEP_DIAGNOSTICS_ENABLED:-$coach_enabled}"
 
 fail() {
     printf '%s\n' "$1" >&2
@@ -77,6 +78,7 @@ wait_for_http() {
     export QUERYSTEP_CATALOG="$catalog"
     export QUERYSTEP_LLM_ALLOW_MAPPED_ITEMS=1
     export QUERYSTEP_DIAGNOSTICS_ENABLED="$diagnostics_enabled"
+    export QUERYSTEP_COACH_ENABLED="${QUERYSTEP_COACH_ENABLED:-$coach_enabled}"
     exec "$backend_python" -m uvicorn api.main:app --host 127.0.0.1 --port "$backend_port"
 ) &
 backend_pid=$!
@@ -99,6 +101,12 @@ if [[ "$diagnostics_enabled" == 1 ]] && ! python -c 'import json, sys
 sys.exit(json.load(sys.stdin).get("diagnostics_ready") is not True)' <<< "$health"; then
     printf '%s\n' "$health" >&2
     fail '诊断模块未就绪，请检查 diagnostics 依赖、数据库和 MCP 启动日志。'
+fi
+
+if [[ "$coach_enabled" == 1 ]] && ! python -c 'import json, sys
+sys.exit(json.load(sys.stdin).get("coach_ready") is not True)' <<< "$health"; then
+    printf '%s\n' "$health" >&2
+    fail '自主错题教练未就绪，请核对 MCP 和索引配置。'
 fi
 
 (

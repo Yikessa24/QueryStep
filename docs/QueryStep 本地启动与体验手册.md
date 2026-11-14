@@ -153,3 +153,22 @@ python -m tutor.check_provider
 ```
 
 技术架构、验收对照和独立评估方法见 [多 Agent 扩展开发文档](QueryStep%20多%20Agent%20扩展开发文档.md)。权重及环境布置见 [部署操作指南](../deploy/OPERATIONS.md)。
+
+## 7. 体验自主错题教练
+
+在项目根目录安装 `knowledge` 依赖，并用已准备的 BAAI/BGE-small-zh-v1.5 本地模型目录建库。下方命令使用当前工作区已经缓存的模型。其它机器将 `QUERYSTEP_EMBEDDING_MODEL` 指向同一模型版本的本地目录。
+
+```bash
+export QUERYSTEP_EMBEDDING_MODEL="$PWD/../examples/居丽叶简历项目7：医疗助手/medix-agent-swarm/.venv/models/bge-small-zh-v1.5"
+export QUERYSTEP_KNOWLEDGE_INDEX="$PWD/artifacts/coach/knowledge.sqlite3"
+artifacts/diagnostics-venv/bin/python -m pip install -e '.[knowledge]'
+artifacts/diagnostics-venv/bin/python -m course_content.knowledge_index \
+  --output "$QUERYSTEP_KNOWLEDGE_INDEX" --model "$QUERYSTEP_EMBEDDING_MODEL"
+QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
+```
+
+1. **LEFT JOIN。** 开无痕窗口，按第 4 节做到 81 号题并答错。在「自主错题教练」点「带我弄懂这题」，输入「查询课程规则，验证把右表状态条件从 ON 移到 WHERE 为什么可能少一行。」页面先显示课程依据或实验数据。若第一次对照两边一样，教练会继续用含边界数据的样例验证。
+2. **HAVING。** 另开新会话，按第 2 节做到 75 号题并答错。输入「查找课程规则并执行对照，HAVING COUNT(*) >= 2 和 > 2 为什么有时结果一样？」查看两个结果表和引用，核对计数恰好为 2 的组。
+3. **回看与下一题。** 刷新可恢复教练结果。迁移练习仍在错题反馈页，正式「下一题」沿用 EpiKT。网关超时保留已完成的证据，仍可直接用「运行诊断」。
+
+`/healthz` 的 `coach_ready` 表示工具进程已启动。实际向量检索以该轮轨迹标记的 `hybrid` 为准。索引未配置时回退审核卡，向量权重与索引不匹配时使用关键词结果。

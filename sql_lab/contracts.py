@@ -128,6 +128,82 @@ class TransferResult(Contract):
 TRANSFER_SCOPE = "transfer"
 TRANSFER_TOOL = "build_transfer_exercise"
 TRANSFER_CONTRACT = (TransferRequest, TransferResult, "用审核过的模板生成并验证 SQL 迁移练习。")
+
+
+class KnowledgeRequest(Contract):
+    query: str = Field(min_length=1, max_length=500)
+    topic: Literal["select", "where", "conditions", "distinct", "aggregate", "set_ops", "join", "subquery", "null"]
+    top_k: int = Field(default=3, ge=1, le=3)
+    mode: Literal["hybrid", "keyword", "vector"] = "hybrid"
+
+
+class KnowledgeCard(Contract):
+    id: str
+    title: str
+    parent: str
+    text: str
+    keywords: str
+    experiment: str | None
+    version: int
+    topic: str
+    dialect: str
+    source_url: str
+    source_section: str
+    reviewed_on: str
+
+
+class KnowledgeResult(Contract):
+    cards: list[KnowledgeCard] = Field(max_length=3)
+    mode: Literal["hybrid", "keyword", "vector", "reviewed_cards"]
+    corpus: str
+    elapsed_ms: float
+
+
+class CoachExperimentRequest(Contract):
+    experiment: Literal["join_filter", "join_count", "having_boundary"]
+    scenario: Literal["matching", "boundary"]
+    threshold: int | None = Field(default=None, ge=0, le=50)
+
+    @model_validator(mode="after")
+    def validate_threshold(self):
+        if (self.experiment == "having_boundary") != (self.threshold is not None):
+            raise ValueError("A threshold is required for HAVING only.")
+        return self
+
+
+class ExperimentRows(Contract):
+    sql: str
+    parameters: dict[str, int]
+    columns: list[str]
+    rows: list[list[str | int | None]] = Field(max_length=50)
+    row_count: int = Field(ge=0, le=50)
+
+    @model_validator(mode="after")
+    def validate_shape(self):
+        if self.row_count != len(self.rows) or any(len(row) != len(self.columns) for row in self.rows):
+            raise ValueError("Experiment counts and columns must match the rows.")
+        return self
+
+
+class CoachExperimentResult(CoachExperimentRequest):
+    fixture: str
+    before: ExperimentRows
+    after: ExperimentRows
+    same: bool
+    removed_keys: list[str]
+    added_keys: list[str]
+    changed_keys: list[str]
+
+
+COACH_SCOPE = "coach"
+KNOWLEDGE_TOOL = "search_course_knowledge"
+COACH_EXPERIMENT_TOOL = "run_coach_experiment"
+COACH_CONTRACTS = {
+    KNOWLEDGE_TOOL: (KnowledgeRequest, KnowledgeResult, "检索审核过的课程片段和来源。"),
+    COACH_EXPERIMENT_TOOL: (CoachExperimentRequest, CoachExperimentResult, "执行审核过的两条 SQL 并比较。"),
+}
+
+
 TOOL_CONTRACTS = {
     "search_course_notes": (SearchRequest, SearchResult, "检索审核过的 SQL 课程资料。"),
     "describe_fixture": (FixtureRequest, FixtureDescription, "读取合成数据的表结构与查询模板。"),
@@ -138,4 +214,13 @@ ROLE_TOOLS = {
     "course": frozenset({"search_course_notes"}),
     "experiment": frozenset({"describe_fixture", "run_example_query", "compare_example_results"}),
     "transfer": frozenset({TRANSFER_TOOL}),
+    "coach": frozenset(COACH_CONTRACTS),
 }
+
+
+def contracts_for(scope):
+    if scope == TRANSFER_SCOPE:
+        return {TRANSFER_TOOL: TRANSFER_CONTRACT}
+    if scope == COACH_SCOPE:
+        return COACH_CONTRACTS
+    return TOOL_CONTRACTS

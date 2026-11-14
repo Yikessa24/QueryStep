@@ -1,0 +1,404 @@
+[
+  {
+    "id": "exact-01",
+    "kind": "exact",
+    "topic": "join",
+    "query": "LEFT JOIN ON WHERE 条件位置",
+    "expected": [
+      [
+        "where-after-join/predicate-placement"
+      ]
+    ]
+  },
+  {
+    "id": "exact-02",
+    "kind": "exact",
+    "topic": "aggregate",
+    "query": "HAVING COUNT(*) >= 2 和 > 2",
+    "expected": [
+      [
+        "having/strict-inclusive"
+      ]
+    ]
+  },
+  {
+    "id": "exact-03",
+    "kind": "exact",
+    "topic": "aggregate",
+    "query": "COUNT(*) 如何统计输入行？",
+    "expected": [
+      [
+        "count/row-count"
+      ]
+    ]
+  },
+  {
+    "id": "exact-04",
+    "kind": "exact",
+    "topic": "aggregate",
+    "query": "COUNT(column) 会计算 NULL 吗？",
+    "expected": [
+      [
+        "count/column-count"
+      ]
+    ]
+  },
+  {
+    "id": "exact-05",
+    "kind": "exact",
+    "topic": "join",
+    "query": "WHERE right.id IS NULL 用法",
+    "expected": [
+      [
+        "null/compare"
+      ]
+    ]
+  },
+  {
+    "id": "exact-06",
+    "kind": "exact",
+    "topic": "aggregate",
+    "query": "GROUP BY category COUNT(*)",
+    "expected": [
+      [
+        "grouping/group-count"
+      ]
+    ]
+  },
+  {
+    "id": "exact-07",
+    "kind": "exact",
+    "topic": "aggregate",
+    "query": "HAVING COUNT(*) > 2 保留哪些分组？",
+    "expected": [
+      [
+        "having/filter-groups"
+      ]
+    ]
+  },
+  {
+    "id": "exact-08",
+    "kind": "exact",
+    "topic": "aggregate",
+    "query": "WHERE HAVING GROUP BY 执行先后",
+    "expected": [
+      [
+        "grouping/filter-order"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-01",
+    "kind": "paraphrase",
+    "topic": "join",
+    "query": "没借过书的读者会不会消失？",
+    "expected": [
+      [
+        "left-join/preserves-left"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-02",
+    "kind": "paraphrase",
+    "topic": "join",
+    "query": "挪了一下右边限制，人突然变少了",
+    "expected": [
+      [
+        "where-after-join/predicate-placement"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-03",
+    "kind": "paraphrase",
+    "topic": "join",
+    "query": "两种写法在我这个数据里一模一样",
+    "expected": [
+      [
+        "where-after-join/matching-only"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-04",
+    "kind": "paraphrase",
+    "topic": "join",
+    "query": "空着那格和填数字零是一回事吗？",
+    "expected": [
+      [
+        "null/unknown"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-05",
+    "kind": "paraphrase",
+    "topic": "join",
+    "query": "怎么只找没有下过单的顾客？",
+    "expected": [
+      [
+        "null/compare"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-06",
+    "kind": "paraphrase",
+    "topic": "aggregate",
+    "query": "只想知道结果总共有几条",
+    "expected": [
+      [
+        "count/row-count"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-07",
+    "kind": "paraphrase",
+    "topic": "aggregate",
+    "query": "有单的人才算，空着的行跳过",
+    "expected": [
+      [
+        "count/column-count"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-08",
+    "kind": "paraphrase",
+    "topic": "aggregate",
+    "query": "每个类别各有几条，要按什么归在一起？",
+    "expected": [
+      [
+        "grouping/group-count"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-09",
+    "kind": "paraphrase",
+    "topic": "aggregate",
+    "query": "我要先只看今年的数据，再判断每类是否有三条",
+    "expected": [
+      [
+        "grouping/filter-order"
+      ]
+    ]
+  },
+  {
+    "id": "paraphrase-10",
+    "kind": "paraphrase",
+    "topic": "aggregate",
+    "query": "刚好达到门槛的类别为什么被丢掉？",
+    "expected": [
+      [
+        "having/strict-inclusive"
+      ]
+    ]
+  },
+  {
+    "id": "cross-01",
+    "kind": "cross",
+    "topic": "join",
+    "query": "外连接没有订单时，COUNT(*) 里也算这个人吗？",
+    "expected": [
+      [
+        "left-join/preserves-left"
+      ],
+      [
+        "count/row-count"
+      ]
+    ]
+  },
+  {
+    "id": "cross-02",
+    "kind": "cross",
+    "topic": "join",
+    "query": "没匹配的右边是空值，为什么数右边主键时没算进去？",
+    "expected": [
+      [
+        "left-join/preserves-left"
+      ],
+      [
+        "count/column-count"
+      ]
+    ]
+  },
+  {
+    "id": "cross-03",
+    "kind": "cross",
+    "topic": "join",
+    "query": "挪了匹配条件后没借过书的人不见了，总行数也会跟着减少吗？",
+    "expected": [
+      [
+        "where-after-join/predicate-placement"
+      ],
+      [
+        "count/row-count"
+      ]
+    ]
+  },
+  {
+    "id": "cross-04",
+    "kind": "cross",
+    "topic": "join",
+    "query": "对每个类别先数行再决定严格大于和大于等于，等于时会怎么样？",
+    "expected": [
+      [
+        "grouping/group-count"
+      ],
+      [
+        "having/strict-inclusive"
+      ]
+    ]
+  },
+  {
+    "id": "cross-05",
+    "kind": "cross",
+    "topic": "join",
+    "query": "哪些记录先被 WHERE 排除？然后如何用 HAVING 判定是否至少两条？",
+    "expected": [
+      [
+        "grouping/filter-order"
+      ],
+      [
+        "having/strict-inclusive"
+      ]
+    ]
+  },
+  {
+    "id": "cross-06",
+    "kind": "cross",
+    "topic": "join",
+    "query": "找没有填写的值可以用等号吗，这种空和零是什么关系？",
+    "expected": [
+      [
+        "null/compare"
+      ],
+      [
+        "null/unknown"
+      ]
+    ]
+  },
+  {
+    "id": "cross-07",
+    "kind": "cross",
+    "topic": "join",
+    "query": "为什么我移动 ON 条件结果一样，怎样放入一个没匹配的读者？",
+    "expected": [
+      [
+        "where-after-join/matching-only"
+      ],
+      [
+        "left-join/preserves-left"
+      ]
+    ]
+  },
+  {
+    "id": "cross-08",
+    "kind": "cross",
+    "topic": "join",
+    "query": "COUNT(*) 和 COUNT(列) 在有空值时哪个会跳过那些行？",
+    "expected": [
+      [
+        "count/row-count"
+      ],
+      [
+        "count/column-count"
+      ]
+    ]
+  },
+  {
+    "id": "no_answer-01",
+    "kind": "no_answer",
+    "topic": "join",
+    "query": "《红楼梦》的作者是谁？",
+    "expected": []
+  },
+  {
+    "id": "no_answer-02",
+    "kind": "no_answer",
+    "topic": "join",
+    "query": "解释 TCP 三次握手",
+    "expected": []
+  },
+  {
+    "id": "no_answer-03",
+    "kind": "no_answer",
+    "topic": "join",
+    "query": "倒咖啡需要几度水？",
+    "expected": []
+  },
+  {
+    "id": "no_answer-04",
+    "kind": "no_answer",
+    "topic": "join",
+    "query": "如何设置 Docker 代理？",
+    "expected": []
+  },
+  {
+    "id": "no_answer-05",
+    "kind": "no_answer",
+    "topic": "join",
+    "query": "如何使用 MySQL 的 JSON_TABLE？",
+    "expected": []
+  },
+  {
+    "id": "no_answer-06",
+    "kind": "no_answer",
+    "topic": "join",
+    "query": "PostgreSQL 的并行索引构建怎么配置？",
+    "expected": []
+  },
+  {
+    "id": "no_answer-07",
+    "kind": "no_answer",
+    "topic": "join",
+    "query": "查询今天上海的天气",
+    "expected": []
+  },
+  {
+    "id": "no_answer-08",
+    "kind": "no_answer",
+    "topic": "join",
+    "query": "怎么用 React 监听键盘",
+    "expected": []
+  },
+  {
+    "id": "dialect-01",
+    "kind": "no_answer",
+    "query": "为什么 SQLite 和 PostgreSQL 在混合逗号连接与 JOIN 的优先级上有差异？",
+    "topic": "join",
+    "expected": []
+  },
+  {
+    "id": "dialect-02",
+    "kind": "no_answer",
+    "query": "MySQL 中没有匹配的左表行能用 JSON_TABLE 处理吗？",
+    "topic": "join",
+    "expected": []
+  },
+  {
+    "id": "dialect-03",
+    "kind": "dialect",
+    "query": "SQLite 里两个都是 NULL，应该如何判断空值？",
+    "topic": "aggregate",
+    "expected": [
+      [
+        "null/compare"
+      ]
+    ]
+  },
+  {
+    "id": "dialect-04",
+    "kind": "dialect",
+    "query": "SQLite 对 COUNT(列) 遇到 NULL 怎么处理？",
+    "topic": "aggregate",
+    "expected": [
+      [
+        "count/column-count"
+      ]
+    ]
+  }
+]

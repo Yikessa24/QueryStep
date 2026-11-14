@@ -21,3 +21,7 @@
 增量创建 `practice_transfers`，主键为原错题的 `decision_id`。首次打开存储合成题、SQL 答案及选项顺序的快照。旧版 `diagnosis_transfer_attempts` 保留，存在旧记录时练习入口复用原题。两个入口通过同一学习者事务锁维护一次首答。
 
 升级前保留数据库和 checkpoint 备份。停用 `QUERYSTEP_DIAGNOSTICS_ENABLED` 可回到原练习流程，同时保留新增表供之后恢复。部署迁移使用单个启动实例。SQLite 路径已做测试，PostgreSQL 多实例部署需另验收。
+
+## 自主错题教练
+
+开启 `QUERYSTEP_COACH_ENABLED` 时增量创建 `coach_runs`。它保存错题决策、学习者作用域内的幂等键、已发布证据与终态。正式作答表作为外键参照。教练的 MCP 进程随服务启动和关闭。当前本地版以单个服务进程运行，服务重启会将上次未完成的运行标为中断并保留已取得证据。

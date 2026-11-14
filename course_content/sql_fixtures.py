@@ -24,10 +24,13 @@ GROUPING_QUERIES = {
     "having_gte": GROUP_COUNTS + " HAVING COUNT(*) >= :min_count ORDER BY category",
 }
 
-JOIN_BASE = "SELECT a.id AS account_id, o.status FROM accounts a LEFT JOIN orders o ON a.id = o.account_id"
+JOIN_FROM = " FROM accounts a LEFT JOIN orders o ON a.id = o.account_id"
+JOIN_BASE = "SELECT a.id AS account_id, o.status" + JOIN_FROM
 JOIN_QUERIES = {
     "join_on": JOIN_BASE + " AND o.status = 'paid' ORDER BY a.id",
     "join_where": JOIN_BASE + " WHERE o.status = 'paid' ORDER BY a.id",
+    "join_count_all": "SELECT COUNT(*) AS total" + JOIN_FROM,
+    "join_count_matched": "SELECT COUNT(o.account_id) AS total" + JOIN_FROM,
 }
 JOIN_TABLES = {
     "accounts": {"id": "INTEGER PRIMARY KEY"},

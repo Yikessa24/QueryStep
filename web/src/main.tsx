@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import CoachPanel from "./CoachPanel";
 import DiagnosisPanel from "./DiagnosisPanel";
 import TransferExercise from "./TransferExercise";
 import LearningMemories from "./LearningMemories";
@@ -271,6 +272,8 @@ function App() {
                     <button type="submit" disabled={busy || !message.trim()}>发送</button>
                   </form>}
                 </section>}
+                {!feedback.correct && <CoachPanel key={practice.decision_id} decisionId={practice.decision_id}
+                  request={api} readOnly={!!review} />}
                 {!feedback.correct && <DiagnosisPanel key={practice.decision_id} decisionId={practice.decision_id} request={api}
                   readOnly={!!review} onMemorySaved={() => setMemoryRevision((value) => value + 1)} />}
                 {!feedback.correct && <TransferExercise key={practice.decision_id} decisionId={practice.decision_id}

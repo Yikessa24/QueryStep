@@ -152,9 +152,24 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
             except Exception as error:
                 app.state.diagnostics_reason = "startup_failed"
                 logger.warning("Diagnostics startup failed (%s)", type(error).__name__)
+        app.state.coach = None
+        if app.state.diagnostics and os.environ.get("QUERYSTEP_COACH_ENABLED") == "1":
+            from api.coach import CoachService
+
+            model = os.environ.get("QUERYSTEP_COACH_MODEL", "gemini-3-flash")
+            coach = CoachService(app.state.practice, model,
+                                 os.environ.get("QUERYSTEP_KNOWLEDGE_INDEX"),
+                                 os.environ.get("QUERYSTEP_EMBEDDING_MODEL"))
+            try:
+                await coach.start()
+                app.state.coach = coach
+            except Exception as error:
+                logger.warning("Coach startup failed (%s)", type(error).__name__)
         try:
             yield
         finally:
+            if app.state.coach:
+                await app.state.coach.close()
             if app.state.diagnostics:
                 await app.state.diagnostics.close()
             if chat:
@@ -190,6 +205,7 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
                     practice.recommender.scorer.supports(item) for item in practice.catalog.items.values()
                 ),
                 "tutor_ready": bool(practice.tutor.model),
+                "coach_ready": request.app.state.coach is not None,
                 "tutor_status": "configured" if practice.tutor.model else practice.tutor.unavailable,
                 "diagnostics_ready": request.app.state.diagnostics is not None,
                 "mcp_ready": request.app.state.diagnostics is not None,
@@ -235,6 +251,18 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
         if diagnostics is None:
             raise HTTPException(503, "SQL 诊断当前不可用。")
         return diagnostics
+
+    @app.get("/api/practice/{decision_id}/coach")
+    def coach_status(decision_id: str, request: Request, user: str = Depends(learner)):
+        coach = request.app.state.coach
+        return coach.status(user, decision_id) if coach else {"available": False, "runs": []}
+
+    @app.post("/api/practice/{decision_id}/coach", status_code=202)
+    async def coach_submit(decision_id: str, body: DiagnosisRequest, request: Request, user: str = Depends(learner)):
+        coach = request.app.state.coach
+        if not coach:
+            raise HTTPException(503, "错题教练暂不可用，可使用快速诊断。")
+        return await coach.submit(user, decision_id, body.message, body.idempotency_key)
 
     @app.get("/api/practice/{decision_id}/transfer")
     def practice_transfer_status(decision_id: str, request: Request, user: str = Depends(learner)):

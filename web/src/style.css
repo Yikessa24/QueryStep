@@ -89,3 +89,6 @@ button.secondary{color:#214b40;background:white}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 :focus-visible{outline:3px solid #517b67;outline-offset:2px}
 @media(max-width:680px){.page{padding:16px 12px}.layout{grid-template-columns:1fr;gap:12px;margin-top:20px}.progress,.workspace{padding:18px}}
+.coach ul{padding-left:1.25rem}
+.coach li+li{margin-top:10px}
+.coach-citation{margin-right:0.75rem}
