@@ -315,6 +315,9 @@ class DiagnosisApiTest(unittest.TestCase):
                     ).raise_for_status().json(), range(2)))
                 self.assertEqual(submitted, duplicate_answer)
                 self.assertTrue(submitted["feedback"]["correct"])
+                restored = client.get(path + "/transfer").raise_for_status().json()
+                self.assertEqual(restored["exercise"]["id"], offered["exercise"]["id"])
+                self.assertEqual(restored["feedback"]["text"], submitted["feedback"]["text"])
                 self.assertEqual(client.post(transfer_path + "/answer", json={"option": 0}).status_code, 409)
                 stream = client.get(run_path + "/events").raise_for_status()
                 events = [json.loads(line[6:]) for line in stream.text.splitlines() if line.startswith("data: {")]

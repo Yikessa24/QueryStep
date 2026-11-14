@@ -9,7 +9,7 @@ from pathlib import Path
 from pickle import UnpicklingError
 from typing import Annotated, Literal
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Path as RoutePath, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
@@ -208,6 +208,10 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
     def progress(request: Request, user: str = Depends(learner)):
         return service(request).progress(user)
 
+    @app.get("/api/practice/history/{event_seq}")
+    def review_item(event_seq: Annotated[int, RoutePath(ge=1)], request: Request, user: str = Depends(learner)):
+        return service(request).review(user, event_seq)
+
     @app.post("/api/practice/next")
     def next_item(request: Request, user: str = Depends(learner)):
         return service(request).next(user)
@@ -231,6 +235,22 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
         if diagnostics is None:
             raise HTTPException(503, "SQL 诊断当前不可用。")
         return diagnostics
+
+    @app.get("/api/practice/{decision_id}/transfer")
+    def practice_transfer_status(decision_id: str, request: Request, user: str = Depends(learner)):
+        diagnostics = request.app.state.diagnostics
+        if diagnostics is None:
+            return {"available": False, "exercise": None, "feedback": None}
+        return diagnostics.practice_transfer_status(user, decision_id)
+
+    @app.post("/api/practice/{decision_id}/transfer")
+    async def offer_practice_transfer(decision_id: str, request: Request, user: str = Depends(learner)):
+        return await diagnostics_service(request).offer_practice_transfer(user, decision_id)
+
+    @app.post("/api/practice/{decision_id}/transfer/answer")
+    def answer_practice_transfer(decision_id: str, body: TransferAnswer, request: Request,
+                                 user: str = Depends(learner)):
+        return diagnostics_service(request).answer_practice_transfer(user, decision_id, body.option)
 
     @app.get("/api/practice/{decision_id}/diagnosis")
     def latest_diagnosis(decision_id: str, request: Request, user: str = Depends(learner)):

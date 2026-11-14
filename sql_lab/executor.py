@@ -47,42 +47,50 @@ def execute(fixture_id: str, query_id: str, parameters: dict, *, timeout: float 
           or not 0 <= parameters["min_count"] <= 50):
         raise LabError("invalid_parameters")
 
-    start = monotonic()
-    deadline = start + timeout
     sql = fixture.queries[query_id]
+    start = monotonic()
+    [(columns, rows)] = select_fixture(fixture.tables, fixture.rows, [(sql, parameters)], timeout=timeout)
+    result = {"fixture_id": fixture.id, "query_id": query_id, "sql": sql,
+              "parameters": dict(parameters), "columns": columns, "rows": rows, "row_count": len(rows)}
+    digest = sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+    return {**result, "fingerprint": digest, "elapsed_ms": round((monotonic() - start) * 1000, 3)}
+
+
+def select_fixture(tables, data, queries, *, functions=frozenset({"count"}), timeout=1.0):
+    """Run reviewed SELECT templates together on the same synthetic tables."""
+    deadline = monotonic() + timeout
 
     def authorize(action, arg1, arg2, database, trigger):
         if (action == sqlite3.SQLITE_SELECT
-                or (action == sqlite3.SQLITE_READ and arg1 in fixture.tables and database in (None, "main"))
-                or (action == sqlite3.SQLITE_FUNCTION and arg2 == "count")):
+                or (action == sqlite3.SQLITE_READ and arg1 in tables and database in (None, "main"))
+                or (action == sqlite3.SQLITE_FUNCTION and arg2 in functions)):
             return sqlite3.SQLITE_OK
         return sqlite3.SQLITE_DENY
 
     try:
         with closing(sqlite3.connect(":memory:")) as db:
-            for table, columns in fixture.tables.items():
+            for table, columns in tables.items():
                 definition = ", ".join(f"{name} {type_}" for name, type_ in columns.items())
                 placeholders = ", ".join("?" for _ in columns)
                 db.execute(f"CREATE TABLE {table} ({definition})")
-                db.executemany(f"INSERT INTO {table} VALUES ({placeholders})", fixture.rows[table])
+                db.executemany(f"INSERT INTO {table} VALUES ({placeholders})", data[table])
             db.execute("PRAGMA query_only=ON")
             db.set_authorizer(authorize)
             db.set_progress_handler(lambda: int(monotonic() >= deadline), 100)
-            cursor = db.execute(sql, parameters)
-            rows = [list(row) for row in cursor.fetchmany(ROW_LIMIT + 1)]
-            columns = [column[0] for column in cursor.description]
+            results = []
+            for sql, parameters in queries:
+                cursor = db.execute(sql, parameters)
+                rows = [list(row) for row in cursor.fetchmany(ROW_LIMIT + 1)]
+                if len(rows) > ROW_LIMIT:
+                    raise LabError("row_limit_exceeded")
+                results.append(([column[0] for column in cursor.description], rows))
     except sqlite3.Error as error:
         code = "query_timeout" if monotonic() >= deadline else "query_rejected"
         raise LabError(code) from error
 
     if monotonic() >= deadline:
         raise LabError("query_timeout")
-    if len(rows) > ROW_LIMIT:
-        raise LabError("row_limit_exceeded")
-    result = {"fixture_id": fixture.id, "query_id": query_id, "sql": sql,
-              "parameters": dict(parameters), "columns": columns, "rows": rows, "row_count": len(rows)}
-    digest = sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
-    return {**result, "fingerprint": digest, "elapsed_ms": round((monotonic() - start) * 1000, 3)}
+    return results
 
 
 def compare(before: dict, after: dict) -> dict:

@@ -13,19 +13,22 @@ from sqlalchemy import Column, DateTime, ForeignKey, JSON, MetaData, String, Tab
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Mapped, mapped_column
 
-from api.db import Base, Decision
+from api.db import Attempt, Base, Decision
 from api.learning_memory import (LearningMemory, active_memories, confirmation_graph,
                                  resume_confirmation, view, wait_for_confirmation)
 from course_content.sql_fixtures import FIXTURES, GROUPING_FIXTURE, JOIN_FIXTURE
 from course_content.transfer import EVENTS, LOANS, TRANSFER_ITEMS
 from sql_lab.client import open_lab
+from sql_lab.contracts import TRANSFER_SCOPE, TRANSFER_TOOL
 from sql_lab.executor import LabError
+from sql_lab.transfer import template_for
 from tutor.diagnosis import Diagnosis, EXPLANATIONS
 from tutor.diagnosis_explanation import EXPLANATION_TIMEOUT, MAX_EXPLANATIONS, explain
 
 
 logger = logging.getLogger(__name__)
 ACTIVE = ("queued", "running", "waiting_confirmation")
+TRANSFER_UNAVAILABLE = {"available": False, "exercise": None, "feedback": None}
 
 
 def now() -> datetime:
@@ -81,6 +84,17 @@ class TransferAttempt(Base):
     decision_id: Mapped[str] = mapped_column(ForeignKey("attempts.decision_id"), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("diagnosis_runs.id"))
     item_id: Mapped[str] = mapped_column(String(80))
+    offered_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    option: Mapped[int | None]
+    correct: Mapped[bool | None]
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class PracticeTransfer(Base):
+    __tablename__ = "practice_transfers"
+
+    decision_id: Mapped[str] = mapped_column(ForeignKey("attempts.decision_id"), primary_key=True)
+    item: Mapped[dict] = mapped_column(JSON)
     offered_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     option: Mapped[int | None]
     correct: Mapped[bool | None]
@@ -326,16 +340,21 @@ class Diagnostics:
 
     def transfer(self, learner_id, run_id, *, offer=False, option=None) -> dict:
         with self.db.transaction() as db:
-            if offer or option is not None:
+            writing = offer or option is not None
+            if writing:
                 self.practice._lock_learner(db, learner_id)
             run = self._owned(db, learner_id, run_id)
-            eligible = (run.status in ("completed", "waiting_confirmation") and run.fixture_id == GROUPING_FIXTURE
-                        and (run.result or {}).get("mode") == "full" and self._current(db, run))
-            if not eligible:
-                if offer or option is not None:
-                    raise HTTPException(409, "当前诊断没有可提交的迁移练习。")
-                return {"available": False, "exercise": None, "feedback": None}
             attempt = db.get(TransferAttempt, run.decision_id)
+            if db.get(PracticeTransfer, run.decision_id) is not None:
+                if writing:
+                    raise HTTPException(409, "请在错题页打开已有的迁移练习。")
+                return TRANSFER_UNAVAILABLE
+            current = (run.status in ("completed", "waiting_confirmation") and run.fixture_id == GROUPING_FIXTURE
+                       and (run.result or {}).get("mode") == "full" and self._current(db, run))
+            if writing and not current:
+                raise HTTPException(409, "当前诊断没有可提交的迁移练习。")
+            if not current and (attempt is None or attempt.option is None):
+                return {"available": False, "exercise": None, "feedback": None}
             if attempt is not None and attempt.run_id != run.id:
                 if option is not None:
                     raise HTTPException(409, "请使用最初打开的迁移练习。")
@@ -352,15 +371,97 @@ class Diagnostics:
                 return {"available": True, "exercise": None, "feedback": None}
             item = TRANSFER_ITEMS[attempt.item_id]
             if option is not None:
-                if not 0 <= option < len(item.options):
-                    raise HTTPException(422, "选项超出范围。")
-                if attempt.option is None:
-                    attempt.option, attempt.correct, attempt.submitted_at = option, option == item.correct_option, now()
-                elif attempt.option != option:
-                    raise HTTPException(409, "本次迁移练习已经提交。")
+                self._save_transfer_answer(attempt, option, item.correct_option)
             feedback = None if attempt.option is None else {"selected_option": attempt.option, "correct": attempt.correct,
                                                             "correct_option": item.correct_option, "text": item.feedback}
             return {"available": True, "exercise": item.public(), "feedback": feedback}
+
+    @staticmethod
+    def _save_transfer_answer(attempt, option, correct_option):
+        if not 0 <= option <= 3:
+            raise HTTPException(422, "选项超出范围。")
+        if attempt.option is None:
+            attempt.option, attempt.correct, attempt.submitted_at = option, option == correct_option, now()
+        elif attempt.option != option:
+            raise HTTPException(409, "本次迁移练习已经提交。")
+
+    def _practice_transfer(self, db, learner_id, decision_id, *, writing=False):
+        decision = self.practice._owned_decision(db, learner_id, decision_id)
+        self.practice._check_catalog(decision.catalog_version)
+        attempt = db.get(Attempt, decision_id)
+        if not attempt or attempt.correct:
+            if writing:
+                raise HTTPException(409, "请先提交原题作答。只有错题提供迁移练习。")
+            return None, None
+        current = self.practice._is_current_wrong(db, attempt)
+        saved = db.get(PracticeTransfer, decision_id) or db.get(TransferAttempt, decision_id)
+        if writing and not current:
+            raise HTTPException(409, "当前练习已更新。")
+        if saved is not None and (current or saved.option is not None):
+            return None, saved
+        if current:
+            item = self.practice.catalog.items[attempt.item_id]
+            variant = "inclusive" if item.source_question_id == 75 else "standard"
+            if template_for(item.source_question_id, item.source_kcs, variant) is not None:
+                return {"question_id": item.source_question_id, "kcs": list(item.source_kcs),
+                        "seed": int(sha256(decision_id.encode()).hexdigest()[:15], 16),
+                        "variant": variant}, None
+        if writing:
+            raise HTTPException(409, "本题没有已审核的迁移练习。")
+        return None, None
+
+    @staticmethod
+    def _practice_transfer_view(saved, available=True):
+        if saved is None:
+            return {"available": available, "exercise": None, "feedback": None}
+        if isinstance(saved, TransferAttempt):
+            legacy = TRANSFER_ITEMS[saved.item_id]
+            table = "events" if legacy.id == EVENTS.id else "loans"
+            item = {**legacy.public(), "tables": [{"name": table, "columns": legacy.columns, "rows": legacy.rows}],
+                    "correct_option": legacy.correct_option, "feedback": legacy.feedback}
+        else:
+            item = saved.item
+        feedback = None if saved.option is None else {
+            "selected_option": saved.option, "correct": saved.correct, "correct_option": item["correct_option"],
+            "text": item["feedback"], "result_columns": item.get("result_columns"), "result_rows": item.get("result_rows"),
+        }
+        return {"available": True, "exercise": {key: item[key] for key in ("id", "context", "sql", "tables", "options")},
+                "feedback": feedback}
+
+    def practice_transfer_status(self, learner_id, decision_id):
+        with self.db.transaction() as db:
+            arguments, saved = self._practice_transfer(db, learner_id, decision_id)
+            return self._practice_transfer_view(saved, available=arguments is not None)
+
+    async def offer_practice_transfer(self, learner_id, decision_id):
+        with self.db.transaction() as db:
+            arguments, saved = self._practice_transfer(db, learner_id, decision_id, writing=True)
+            if saved:
+                return self._practice_transfer_view(saved)
+        try:
+            async with open_lab(TRANSFER_SCOPE) as lab:
+                item = await lab.call("transfer", TRANSFER_TOOL, arguments)
+        except Exception as error:
+            logger.warning("Transfer exercise unavailable (%s)", type(error).__name__)
+            raise HTTPException(503, "迁移练习暂时无法生成，请重试。") from error
+        with self.db.transaction() as db:
+            self.practice._lock_learner(db, learner_id)
+            _, saved = self._practice_transfer(db, learner_id, decision_id, writing=True)
+            if saved is None:
+                saved = PracticeTransfer(decision_id=decision_id, item=item)
+                db.add(saved)
+            return self._practice_transfer_view(saved)
+
+    def answer_practice_transfer(self, learner_id, decision_id, option):
+        with self.db.transaction() as db:
+            self.practice._lock_learner(db, learner_id)
+            _, saved = self._practice_transfer(db, learner_id, decision_id, writing=True)
+            if saved is None:
+                raise HTTPException(409, "请先打开迁移练习。")
+            correct_option = (TRANSFER_ITEMS[saved.item_id].correct_option if isinstance(saved, TransferAttempt)
+                              else saved.item["correct_option"])
+            self._save_transfer_answer(saved, option, correct_option)
+            return self._practice_transfer_view(saved)
 
     def memories(self, learner_id, topic=None, *, limit=20, offset=0) -> list[dict]:
         with self.db.transaction() as db:
@@ -601,8 +702,12 @@ def migrate(engine):
         if connection.scalar(select(revisions.c.id).where(revisions.c.id == revision)) is None:
             TransferAttempt.__table__.create(connection, checkfirst=True)
             connection.execute(revisions.insert().values(id=revision))
+        revision = "diagnostics_004"
+        if connection.scalar(select(revisions.c.id).where(revisions.c.id == revision)) is None:
+            PracticeTransfer.__table__.create(connection, checkfirst=True)
+            connection.execute(revisions.insert().values(id=revision))
         for table in (DiagnosisRun.__table__, DiagnosisEvent.__table__, LearningMemory.__table__,
-                      DiagnosisExperiment.__table__, TransferAttempt.__table__):
+                      DiagnosisExperiment.__table__, TransferAttempt.__table__, PracticeTransfer.__table__):
             actual = {column["name"] for column in inspect(connection).get_columns(table.name)}
             if not set(table.columns.keys()) <= actual:
                 raise RuntimeError(f"Database table {table.name} needs a migration.")

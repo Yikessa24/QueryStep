@@ -86,6 +86,48 @@ class Comparison(CompareRequest):
     changed_keys: list[str]
 
 
+class TransferRequest(Contract):
+    question_id: int = Field(ge=1)
+    kcs: list[int] = Field(min_length=1, max_length=3)
+    seed: int = Field(ge=0, le=2**63 - 1)
+    variant: Literal["standard", "inclusive"]
+
+
+class TransferTable(Contract):
+    name: str
+    columns: list[str] = Field(min_length=1)
+    rows: list[list[int | str | None]] = Field(max_length=50)
+
+    @model_validator(mode="after")
+    def validate_table(self):
+        if any(len(row) != len(self.columns) for row in self.rows):
+            raise ValueError("Table columns must match the rows.")
+        return self
+
+
+class TransferResult(Contract):
+    id: str
+    concept: str
+    context: str
+    sql: str
+    tables: list[TransferTable] = Field(min_length=1, max_length=2)
+    options: list[str] = Field(min_length=4, max_length=4)
+    correct_option: int = Field(ge=0, le=3)
+    feedback: str
+    result_columns: list[str] = Field(min_length=1)
+    result_rows: list[list[int | str | None]] = Field(max_length=50)
+
+    @model_validator(mode="after")
+    def validate_exercise(self):
+        if (len(set(self.options)) != len(self.options)
+                or any(len(row) != len(self.result_columns) for row in self.result_rows)):
+            raise ValueError("Exercise options must be distinct and result columns must match the rows.")
+        return self
+
+
+TRANSFER_SCOPE = "transfer"
+TRANSFER_TOOL = "build_transfer_exercise"
+TRANSFER_CONTRACT = (TransferRequest, TransferResult, "用审核过的模板生成并验证 SQL 迁移练习。")
 TOOL_CONTRACTS = {
     "search_course_notes": (SearchRequest, SearchResult, "检索审核过的 SQL 课程资料。"),
     "describe_fixture": (FixtureRequest, FixtureDescription, "读取合成数据的表结构与查询模板。"),
@@ -95,4 +137,5 @@ TOOL_CONTRACTS = {
 ROLE_TOOLS = {
     "course": frozenset({"search_course_notes"}),
     "experiment": frozenset({"describe_fixture", "run_example_query", "compare_example_results"}),
+    "transfer": frozenset({TRANSFER_TOOL}),
 }

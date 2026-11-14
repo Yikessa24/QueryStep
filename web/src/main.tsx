@@ -1,18 +1,19 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import DiagnosisPanel from "./DiagnosisPanel";
+import TransferExercise from "./TransferExercise";
 import LearningMemories from "./LearningMemories";
 import "./style.css";
 
 type Item = { id: number; title: string; prompt: string; options: string[]; level: number; topic: string };
 type Presentation = { status: "ready"; decision_id: string; item: Item; source: "rule" | "epikt"; reason: string };
 type Finished = { status: "complete" | "blocked"; remaining: number };
-type Feedback = { decision_id: string; correct: boolean; selected_option: number; template_hint: string | null };
+type Feedback = { decision_id: string; event_seq: number; correct: boolean; selected_option: number; template_hint: string | null };
 type Turn = { message: string; text: string; source: "llm" | "template"; action: string;
   memory_ids?: string[];
   citations: { id: string; title: string; url?: string }[] };
-type Progress = { total: number; correct: number; pending: Presentation | null;
-  last: { presentation: Presentation; feedback: Feedback; turns: Turn[] } | null };
+type Review = { presentation: Presentation; feedback: Feedback; turns: Turn[] };
+type Progress = { total: number; correct: number; pending: Presentation | null; last: Review | null };
 type Replay = { chosen_item_id: number; source: string; comparison: { rule_item_id?: number | null; model_version?: string } };
 type PendingRequest = "practice" | "tutor";
 
@@ -55,13 +56,14 @@ async function api<T>(path: string, body?: unknown, method = body === undefined 
 
 function App() {
   const [loaded, setLoaded] = useState(false);
-  const [practice, setPractice] = useState<Presentation | null>(null);
-  const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [currentPractice, setPractice] = useState<Presentation | null>(null);
+  const [currentFeedback, setFeedback] = useState<Feedback | null>(null);
+  const [currentTurns, setTurns] = useState<Turn[]>([]);
+  const [review, setReview] = useState<Review | null>(null);
   const [progress, setProgress] = useState({ total: 0, correct: 0 });
   const [finished, setFinished] = useState<Finished | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
-  const [choice, setChoice] = useState<number | null>(null);
+  const [currentChoice, setChoice] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [replay, setReplay] = useState<Replay | null>(null);
   const [memoryRevision, setMemoryRevision] = useState(0);
@@ -69,6 +71,11 @@ function App() {
   const [error, setError] = useState("");
   const busy = pendingRequest !== null;
   const tutorPending = pendingRequest === "tutor";
+  const practice = review?.presentation ?? currentPractice;
+  const feedback = review?.feedback ?? currentFeedback;
+  const turns = review?.turns ?? currentTurns;
+  const choice = review?.feedback.selected_option ?? currentChoice;
+  const previousSequence = (feedback?.event_seq ?? progress.total + 1) - 1;
 
   useEffect(() => {
     let active = true;
@@ -101,6 +108,7 @@ function App() {
       if (problem instanceof ApiError && problem.code === "catalog_changed") {
         setRestartRequired(true);
         setPractice(null);
+        setReview(null);
       }
       setError(problem instanceof Error ? problem.message : "请求失败，请重试。");
     } finally {
@@ -119,6 +127,19 @@ function App() {
     setReplay(null);
   }
 
+  function reviewItem(sequence: number) {
+    return perform(async () => {
+      setReview(await api<Review>(`/api/practice/history/${sequence}`));
+      setReplay(null);
+    });
+  }
+
+  function returnToCurrent() {
+    setReview(null);
+    setReplay(null);
+    setError("");
+  }
+
   function begin(restart = false) {
     return perform(async () => {
       await api("/api/session" + (restart ? "?restart=true" : ""), {});
@@ -133,7 +154,7 @@ function App() {
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (choice === null || !practice) return;
+    if (review || choice === null || !practice) return;
     const selected = practice;
     return perform(async () => {
       const result = await api<Feedback>(`/api/practice/${selected.decision_id}/answer`,
@@ -146,7 +167,7 @@ function App() {
 
   function ask(event: FormEvent) {
     event.preventDefault();
-    if (!practice || !message.trim()) return;
+    if (review || !practice || !message.trim()) return;
     const id = practice.decision_id;
     const text = message.trim();
     return perform(async () => {
@@ -168,7 +189,7 @@ function App() {
           <h2>每道题都有下一步</h2>
           <p>练习结果会用于后续推荐。你可以关闭页面，下次继续。</p>
           <dl><dt>已作答</dt><dd>{progress.total}</dd><dt>答对</dt><dd>{progress.correct}</dd></dl>
-          {(practice || finished) && <LearningMemories key={practice?.decision_id ?? "finished"} request={api}
+          {(currentPractice || finished) && <LearningMemories key={currentPractice?.decision_id ?? "finished"} request={api}
             revision={memoryRevision} />}
         </aside>
         <section className="workspace">
@@ -184,10 +205,23 @@ function App() {
               <button disabled={busy} onClick={() => begin(restartRequired || !!finished)}>
                 {restartRequired || finished ? "重新开始" : "开始练习"}
               </button>
+              {finished && progress.total > 0 && <button className="secondary" disabled={busy}
+                onClick={() => reviewItem(progress.total)}>上一题</button>}
             </>
           ) : (
             <>
               <div className="item-meta"><span>{practice.item.topic}</span><span>{practice.source === "epikt" ? "EpiKT 推荐" : "规则推荐"}</span></div>
+              {previousSequence > 0 || review ? <nav className="actions question-navigation" aria-label="题目导航">
+                <button type="button" className="secondary" disabled={busy || previousSequence < 1}
+                  onClick={() => reviewItem(previousSequence)}>上一题</button>
+                {review && <button type="button" className="secondary" disabled={busy} onClick={() => {
+                  const nextSequence = review.feedback.event_seq + 1;
+                  if (nextSequence < (currentFeedback?.event_seq ?? progress.total + 1)) void reviewItem(nextSequence);
+                  else returnToCurrent();
+                }}>下一题</button>}
+                {review && <button type="button" disabled={busy} onClick={returnToCurrent}>返回当前进度</button>}
+              </nav> : null}
+              {review && <p className="eyebrow">正在回看第 {review.feedback.event_seq} 题</p>}
               <p>{practice.reason === "cold_start" ? "正在建立练习记录。" :
                 `${practiceDirection[practice.item.level]}。`}</p>
               <h1>{practice.item.title}</h1>
@@ -212,7 +246,7 @@ function App() {
                 <p className={feedback.correct ? "notice success" : "notice"} role="status">
                   {feedback.correct ? "回答正确。可以继续练习。" : `回答有误。${feedback.template_hint ?? ""}`}
                 </p>
-                {!feedback.correct && <section className="tutor" aria-label="课程辅导">
+                {!feedback.correct && (!review || turns.length > 0) && <section className="tutor" aria-label="课程辅导">
                   <h2>问问助教</h2>
                   {turns.map((turn, index) => <article className="turn" key={index}>
                     <p><b>你</b> {turn.message}</p>
@@ -231,16 +265,18 @@ function App() {
                       助教正在思考…
                     </p>}
                   </div>
-                  <form onSubmit={ask} className="tutor-form">
+                  {!review && <form onSubmit={ask} className="tutor-form">
                     <input aria-label="你的问题" placeholder="说说你刚才是怎么想的…" maxLength={500}
                       value={message} readOnly={tutorPending} onChange={(event) => setMessage(event.target.value)} />
                     <button type="submit" disabled={busy || !message.trim()}>发送</button>
-                  </form>
+                  </form>}
                 </section>}
                 {!feedback.correct && <DiagnosisPanel key={practice.decision_id} decisionId={practice.decision_id} request={api}
-                  onMemorySaved={() => setMemoryRevision((value) => value + 1)} />}
+                  readOnly={!!review} onMemorySaved={() => setMemoryRevision((value) => value + 1)} />}
+                {!feedback.correct && <TransferExercise key={practice.decision_id} decisionId={practice.decision_id}
+                  request={api} readOnly={!!review} />}
                 <div className="actions">
-                  <button disabled={busy} onClick={() => perform(nextItem)}>下一题</button>
+                  {!review && <button disabled={busy} onClick={() => perform(nextItem)}>下一题</button>}
                   <button className="secondary" disabled={busy} onClick={() => perform(async () => {
                     setReplay(await api<Replay>(`/api/practice/${practice.decision_id}/replay`));
                   })}>查看选题记录</button>

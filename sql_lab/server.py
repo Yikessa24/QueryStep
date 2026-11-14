@@ -11,24 +11,27 @@ from pydantic import ValidationError
 
 from course_content.diagnosis_cards import search
 from course_content.sql_fixtures import FIXTURES, GROUPING_FIXTURE
-from sql_lab.contracts import CompareRequest, FixtureRequest, QueryRequest, SearchRequest, TOOL_CONTRACTS
+from sql_lab.contracts import (CompareRequest, FixtureRequest, QueryRequest, SearchRequest, TOOL_CONTRACTS,
+                               TRANSFER_CONTRACT, TRANSFER_SCOPE, TRANSFER_TOOL, TransferRequest)
 from sql_lab.executor import LabError, compare, describe, execute
+from sql_lab.transfer import build_transfer
 
 
 def create_server(fixture_id: str) -> Server:
     server = Server("querystep-sql-lab")
     observations: dict[str, dict] = {}
+    contracts = {TRANSFER_TOOL: TRANSFER_CONTRACT} if fixture_id == TRANSFER_SCOPE else TOOL_CONTRACTS
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
         return [Tool(name=name, description=description, inputSchema=request.model_json_schema(),
                      outputSchema=result.model_json_schema(),
                      annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
-                for name, (request, result, description) in TOOL_CONTRACTS.items()]
+                for name, (request, result, description) in contracts.items()]
 
     @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict) -> dict:
-        contract = TOOL_CONTRACTS.get(name)
+        contract = contracts.get(name)
         if contract is None:
             raise LabError("unknown_tool")
         try:
@@ -36,6 +39,8 @@ def create_server(fixture_id: str) -> Server:
         except ValidationError as error:
             raise LabError("invalid_parameters") from error
 
+        if isinstance(request, TransferRequest):
+            return build_transfer(**request.model_dump())
         if isinstance(request, SearchRequest):
             return {"cards": search(request.query, request.topic, request.top_k)}
         if isinstance(request, CompareRequest):
@@ -67,7 +72,7 @@ async def serve(fixture_id: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture", choices=FIXTURES, default=GROUPING_FIXTURE)
+    parser.add_argument("--fixture", choices=(*FIXTURES, TRANSFER_SCOPE), default=GROUPING_FIXTURE)
     asyncio.run(serve(parser.parse_args().fixture))
 
 

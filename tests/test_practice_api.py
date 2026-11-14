@@ -50,6 +50,22 @@ class PracticeAPITest(unittest.TestCase):
         return client.post(f"/api/practice/{decision}/answer",
                            json={"option": option, "idempotency_key": decision})
 
+    def test_history_review_restores_saved_feedback_without_advancing(self):
+        self.client.post("/api/session", json={}).raise_for_status()
+        initial = self.present()
+        answer = self.answer(initial["decision_id"], 1).raise_for_status().json()
+        turn = self.client.post(f"/api/practice/{initial['decision_id']}/tutor",
+                               json={"message": "我想回顾这道题。"}).raise_for_status().json()
+        pending = self.present()
+        progress = self.client.get("/api/practice/progress").json()
+        history = self.client.get("/api/practice/history/1").raise_for_status().json()
+        self.assertEqual(history, {"presentation": initial, "feedback": answer, "turns": [turn]})
+        self.assertEqual(self.client.get("/api/practice/history/2").status_code, 404)
+        self.assertEqual(self.client.get("/api/practice/progress").json(), progress)
+        self.assertEqual(self.present(), pending)
+        self.client.post("/api/session?restart=true", json={}).raise_for_status()
+        self.assertEqual(self.client.get("/api/practice/history/1").status_code, 404)
+
     def test_full_flow_resume_tutor_and_scoring_trace(self):
         self.assertEqual(self.client.get("/api/practice/progress").status_code, 401)
         self.assertEqual(self.client.post("/api/session", json={}).status_code, 200)

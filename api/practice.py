@@ -157,10 +157,20 @@ class Practice:
             last_decision = db.get(Decision, last.decision_id) if last else None
             last_view = None
             if last_decision and not pending:
-                last_view = {"presentation": self._present(last_decision), "feedback": self._feedback(last),
-                             "turns": self._turns(db, last.decision_id)}
+                last_view = self._review(db, last_decision, last)
             return {"total": len(attempts), "correct": sum(row.correct for row in attempts),
                     "pending": self._present(pending) if pending else None, "last": last_view}
+
+    def _review(self, db, decision: Decision, attempt: Attempt) -> dict:
+        return {"presentation": self._present(decision), "feedback": self._feedback(attempt),
+                "turns": self._turns(db, decision.id)}
+
+    def review(self, learner_id: str, event_seq: int) -> dict:
+        with self.db.transaction() as db:
+            attempt = db.scalar(select(Attempt).where(Attempt.learner_id == learner_id, Attempt.event_seq == event_seq))
+            if attempt is None:
+                raise HTTPException(404, "找不到这道已提交的练习。")
+            return self._review(db, self._owned_decision(db, learner_id, attempt.decision_id), attempt)
 
     def replay(self, learner_id: str, decision_id: str) -> dict:
         with self.db.transaction() as db:
@@ -180,11 +190,15 @@ class Practice:
         decision = self._owned_decision(db, learner_id, decision_id)
         self._present(decision)
         attempt = db.get(Attempt, decision_id)
-        learner = db.get(Learner, learner_id)
-        if (not attempt or attempt.correct or attempt.event_seq != learner.history_version
-                or self._decision(db, learner_id, learner.history_version)):
+        if not self._is_current_wrong(db, attempt):
             raise HTTPException(409, "请在当前错题的反馈页使用辅导。")
         return attempt
+
+    def _is_current_wrong(self, db, attempt: Attempt | None) -> bool:
+        if attempt is None or attempt.correct:
+            return False
+        version = db.get(Learner, attempt.learner_id).history_version
+        return attempt.event_seq == version and self._decision(db, attempt.learner_id, version) is None
 
     def tutor_turn(self, learner_id: str, decision_id: str, message: str, *, memory_lookup=None) -> dict:
         with self.db.transaction() as db:

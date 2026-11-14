@@ -26,6 +26,52 @@ async function timeEvidence(page) {
   return Math.round(await page.evaluate(() => performance.now()) - start);
 }
 
+async function submitTransfer(page, answer, expectedTables) {
+  const transfer = page.getByRole("region", { name: "迁移练习" });
+  await transfer.getByRole("button", { name: "换一组数据练练" }).click();
+  const tables = transfer.getByRole("table");
+  await tables.nth(expectedTables - 1).waitFor();
+  assert.equal(await tables.count(), expectedTables);
+  const expected = await answer(tables);
+  await transfer.getByRole("radio", { name: expected, exact: true }).check();
+  await transfer.getByRole("button", { name: "提交迁移题" }).click();
+  await transfer.getByRole("status").getByText(/^答对了。/).waitFor();
+  await transfer.getByRole("table", { name: "SQLite 查询结果" }).waitFor();
+  return transfer;
+}
+
+async function verifyJoinTransfer(browser, url) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(url);
+    await page.getByRole("button", { name: "开始练习" }).click();
+    const answers = [0, 1, 0, 2, 0, 0];
+    for (const [index, answer] of answers.entries()) {
+      const submit = page.getByRole("button", { name: "提交答案" });
+      await submit.waitFor();
+      await page.getByRole("radio").nth(answer).check();
+      await submit.click();
+      const next = page.getByRole("button", { name: "下一题" });
+      await next.waitFor();
+      if (index < answers.length - 1) await next.click();
+    }
+    await page.getByRole("button", { name: "查看选题记录" }).click();
+    await page.getByText(/本轮实际题号 81.*规则对照题号 70/).waitFor();
+    const transfer = await submitTransfer(page, async (tables) => {
+      const left = await tables.nth(0).locator("tbody tr").all();
+      const right = await tables.nth(1).locator("tbody tr").all();
+      const rightKeys = await Promise.all(right.map((row) => row.getByRole("cell").nth(1).innerText()));
+      const keys = await Promise.all(left.map((row) => row.getByRole("cell").first().innerText()));
+      return `${keys.reduce((total, key) => total + Math.max(1, rightKeys.filter((value) => value === key).length), 0)} 行`;
+    }, 2);
+    await transfer.getByRole("table", { name: "SQLite 查询结果" }).getByText("NULL", { exact: true }).first().waitFor();
+    assert.equal((await (await page.request.get(`${url}/api/practice/progress`)).json()).total, 6);
+    console.log("Browser: EpiKT 81 vs rule 70, LEFT JOIN transfer available before diagnosis, verified NULL and unchanged grading ledger.");
+  } finally {
+    await page.close();
+  }
+}
+
 async function benchmark(browser, url) {
   const samples = Number(process.env.QUERYSTEP_TEST_BENCHMARK_SAMPLES);
   const concurrency = Number(process.env.QUERYSTEP_TEST_CONCURRENCY || 1);
@@ -108,13 +154,9 @@ async function main() {
     await page.getByText("诊断完成，学习记录待确认。", { exact: true }).waitFor();
     await page.getByRole("button", { name: "比较结果" }).click();
     await page.getByText("两次查询未移除任何结果键。", { exact: true }).waitFor();
-    const transfer = page.getByRole("region", { name: "迁移练习" });
-    await transfer.getByRole("button", { name: "换一组数据练练" }).click();
-    await transfer.getByRole("radio", { name: "河西和城南", exact: true }).check();
-    await transfer.getByRole("button", { name: "提交迁移题" }).click();
-    await transfer.getByText(/答对了。河西有 2 条借阅/).waitFor();
+    const transfer = await submitTransfer(page, async () => "2 行", 1);
     await page.reload();
-    await transfer.getByText(/答对了。河西有 2 条借阅/).waitFor();
+    await transfer.getByRole("status").getByText(/^答对了。/).waitFor();
     await page.getByRole("button", { name: "确认保存" }).click();
     await page.getByText("学习记录已保存。", { exact: true }).waitFor();
     await page.getByText("已确认的学习记录", { exact: true }).click();
@@ -124,6 +166,17 @@ async function main() {
     await page.getByRole("button", { name: "下一题" }).click();
     await page.getByRole("button", { name: "提交答案" }).waitFor();
     await page.getByRole("radio").first().check();
+    await page.getByRole("button", { name: "上一题" }).click();
+    await page.getByText("正在回看第 4 题").waitFor();
+    await page.getByText("被筛除的分组：D", { exact: true }).waitFor();
+    await transfer.getByRole("status").getByText(/^答对了。/).waitFor();
+    assert.equal(await page.getByRole("button", { name: "提交答案" }).count(), 0);
+    await page.getByRole("button", { name: "上一题" }).click();
+    await page.getByText("正在回看第 3 题").waitFor();
+    await page.getByRole("button", { name: "下一题" }).click();
+    await page.getByText("正在回看第 4 题").waitFor();
+    await page.getByRole("button", { name: "返回当前进度" }).click();
+    assert.equal(await page.getByRole("radio").first().isChecked(), true);
     await page.getByRole("button", { name: "提交答案" }).click();
     let reply;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -147,6 +200,7 @@ async function main() {
     }
     assert.deepEqual(errors, []);
     console.log("Browser: EpiKT 75 vs rule 69, MCP 4→3, transfer submission, reload, and saved memory.");
+    await verifyJoinTransfer(browser, url);
   } finally {
     await browser.close();
   }

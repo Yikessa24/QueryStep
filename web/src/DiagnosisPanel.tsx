@@ -1,5 +1,4 @@
 import { FormEvent, useEffect, useState } from "react";
-import TransferExercise from "./TransferExercise";
 
 type Observation = { observation_id: string; sql: string; parameters: Record<string, number>;
   columns: string[]; rows: (string | number | null)[][]; row_count: number };
@@ -50,8 +49,8 @@ function ExperimentResults({ evidence, join }: { evidence: Evidence; join: boole
   </>;
 }
 
-export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
-  { decisionId: string; request: Request; onMemorySaved: () => void }) {
+export default function DiagnosisPanel({ decisionId, request, onMemorySaved, readOnly }:
+  { decisionId: string; request: Request; onMemorySaved: () => void; readOnly: boolean }) {
   const [available, setAvailable] = useState(false);
   const [topic, setTopic] = useState("aggregate");
   const [run, setRun] = useState<Run | null>(null);
@@ -203,26 +202,27 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
     }
   }
 
-  if (!available) return null;
-  const result = run?.status === "completed" || run?.status === "waiting_confirmation" ? run.result : null;
+  if (!available || (readOnly && !run?.result?.summary)) return null;
+  const result = readOnly || run?.status === "completed" || run?.status === "waiting_confirmation" ? run?.result : null;
   return <section className="diagnosis" aria-label="SQL 错题诊断">
     <h2>SQL 错题诊断</h2>
     <p>用独立的合成数据验证你的判断。</p>
-    <form className="tutor-form" onSubmit={start}>
+    {!readOnly && <form className="tutor-form" onSubmit={start}>
       <input aria-label="你的判断" placeholder={join ? "例如：条件移到 WHERE 后，为什么少了行？" : "例如：为什么分组后还会少一行？"} maxLength={500}
         value={message} readOnly={sending || running} onChange={(event) => {
           setMessage(event.target.value);
           setRequestKey(crypto.randomUUID());
         }} />
       <button disabled={sending || running || !!proposal || !message.trim()}>运行诊断</button>
-    </form>
+    </form>}
     {error && <p className="error" role="alert">{error}</p>}
     {run && <div role="status">
-      <p>{run.status === "completed" && run.result?.mode === "clarify" ? "请确认实验条件" : statuses[run.status]}</p>
+      <p>{readOnly ? "已保存的诊断结果" : run.status === "completed" && run.result?.mode === "clarify"
+        ? "请确认实验条件" : statuses[run.status]}</p>
       {Object.entries(run.branches).map(([branch, status]) =>
         <span className="citation" key={branch}>{branchTitles[branch]} · {statuses[status === "failed" ? "failed_branch" : status] ?? status}</span>)}
     </div>}
-    {running && <button type="button" className="secondary" onClick={async () => {
+    {running && !readOnly && <button type="button" className="secondary" onClick={async () => {
       try {
         setRun(await request<Run>(`/api/diagnosis/${runId}/cancel`, {}));
       } catch {
@@ -233,9 +233,9 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
       <p>{result.summary}</p>
       {!!result.memory_ids?.length && <p>本轮诊断读取了此前确认的相关学习记录。</p>}
       {result.mode !== "full" && result.mode !== "clarify" && <p>本轮仅展示已取得的证据或课程提示。</p>}
-      {result.sources.length > 0 && <ul>{result.sources.map((source) =>
+      {result.sources.length > 0 && <><h3>课程依据</h3><ul>{result.sources.map((source) =>
         <li key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
-          {source.text && <p>{source.text}</p>}</li>)}</ul>}
+          {source.text && <p>{source.text}</p>}</li>)}</ul></>}
       {result.observations.length > 0 && <ExperimentResults evidence={result} join={join} />}
       {explanation?.status === "pending" && <p className="tutor-thinking" role="status">
         <span className="tutor-thinking-dots" aria-hidden="true"><span /><span /><span /></span>
@@ -250,7 +250,7 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
         {!!explanation.memory_ids?.length && <p>本次讲解参考了你确认过的复习要点。</p>}
       </section>}
       {explanation?.status === "fallback" && <p>本轮可根据上方课程依据和 SQL 结果继续练习。</p>}
-      <form className="diagnosis-controls" onSubmit={tryExperiment}>
+      {!readOnly && <form className="diagnosis-controls" onSubmit={tryExperiment}>
         {!join && <><label>筛选条件 <select value={operator} disabled={sending} onChange={(event) => {
           setOperator(event.target.value);
           setExperimentKey(crypto.randomUUID());
@@ -263,20 +263,20 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved }:
             setExperimentKey(crypto.randomUUID());
           }} /></label></>}
         <button disabled={sending}>{join ? "把条件移到 WHERE 并比较" : "比较结果"}</button>
-      </form>
+      </form>}
       {experiment && <ExperimentResults evidence={experiment} join={join} />}
-      {runId && !join && result.mode === "full" && <TransferExercise key={runId} runId={runId} request={request} />}
       {result.trace && <details><summary>查看诊断轨迹</summary>
         {Object.entries(result.trace).map(([branch, steps]) => <p key={branch}>
           {branchTitles[branch]} · {steps.map((step) => step.tool).join(" → ") || "未执行工具"}
         </p>)}
       </details>}
     </>}
-    {proposal && <form className="diagnosis-memory" onSubmit={(event) => {
+    {!readOnly && proposal && <form className="diagnosis-memory" onSubmit={(event) => {
       event.preventDefault();
       void confirm(pending?.action ?? (summary.trim() === proposal.summary ? "confirm" : "edit"));
     }}>
       <h3>保存为学习记录</h3>
+      <p>以后遇到同主题的错题时，助教可以参考你确认的复习要点。</p>
       <label>复习要点 <textarea value={summary} maxLength={300} required readOnly={!!pending || sending} onChange={(event) =>
         setSummary(event.target.value)} /></label>
       <div className="actions"><button disabled={sending || !summary.trim()}>{pending ? "重试确认" : "确认保存"}</button>

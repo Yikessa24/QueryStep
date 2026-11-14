@@ -30,6 +30,7 @@ button.secondary{color:#214b40;background:white}
 .error{background:#f9dfde;color:#772626}
 .notice.success{background:#e9f4ed}
 .replay{padding:10px 12px;background:#f3f6f3;border-radius:8px}
+.question-navigation{margin:12px 0;flex-wrap:wrap}
 .tutor{margin:20px 0;border-top:1px solid #d8e1d9;padding-top:14px}
 .tutor-form input{flex:1;min-width:0;border:1px solid #aebeb1;border-radius:8px;padding:10px;font:inherit}
 .turn{background:#f3f6f3;border-radius:8px;padding:8px 12px;margin:10px 0;overflow-wrap:anywhere}
@@ -42,6 +43,8 @@ button.secondary{color:#214b40;background:white}
 .diagnosis-results pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
 .diagnosis-results table{width:100%;border-collapse:collapse;text-align:left}
 .diagnosis-results th,.diagnosis-results td{padding:5px 7px;border-top:1px solid #d8e1d9}
+.transfer-table{overflow-x:auto}
+.transfer-table caption{text-align:left;font-weight:700;margin-bottom:6px}
 .removed-row{background:#fff4dd;color:#873e20}
 .diagnosis-controls{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:12px 0}
 .diagnosis-controls select,.diagnosis-controls input{font:inherit}

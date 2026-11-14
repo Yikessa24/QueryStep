@@ -10,7 +10,8 @@ from mcp.client.stdio import stdio_client
 from pydantic import ValidationError
 
 from course_content.sql_fixtures import FIXTURES
-from sql_lab.contracts import CompareRequest, FixtureRequest, QueryRequest, ROLE_TOOLS, TOOL_CONTRACTS
+from sql_lab.contracts import (CompareRequest, FixtureRequest, QueryRequest, ROLE_TOOLS, TOOL_CONTRACTS,
+                               TRANSFER_CONTRACT, TRANSFER_SCOPE, TRANSFER_TOOL)
 from sql_lab.executor import LabError
 
 
@@ -18,11 +19,12 @@ class LabClient:
     def __init__(self, session: ClientSession, fixture_id: str):
         self.session = session
         self.fixture_id = fixture_id
+        self.contracts = {TRANSFER_TOOL: TRANSFER_CONTRACT} if fixture_id == TRANSFER_SCOPE else TOOL_CONTRACTS
 
     async def call(self, role: str, name: str, arguments: dict, *, timeout: float = 2) -> dict:
-        if name not in ROLE_TOOLS.get(role, ()):
+        if name not in ROLE_TOOLS.get(role, ()) or name not in self.contracts:
             raise LabError("tool_not_allowed")
-        request_type, result_type, _ = TOOL_CONTRACTS[name]
+        request_type, result_type, _ = self.contracts[name]
         try:
             request = request_type.model_validate(arguments)
         except ValidationError as error:
@@ -53,7 +55,7 @@ class LabClient:
 
 @asynccontextmanager
 async def open_lab(fixture_id: str):
-    if fixture_id not in FIXTURES:
+    if fixture_id not in FIXTURES and fixture_id != TRANSFER_SCOPE:
         raise LabError("unknown_fixture")
     parameters = StdioServerParameters(command=sys.executable,
                                        args=["-m", "sql_lab.server", "--fixture", fixture_id])
@@ -62,9 +64,10 @@ async def open_lab(fixture_id: str):
             await session.initialize()
             discovered = (await session.list_tools()).tools
         tools = {tool.name: tool for tool in discovered}
-        for name, (request, result, _) in TOOL_CONTRACTS.items():
+        lab = LabClient(session, fixture_id)
+        for name, (request, result, _) in lab.contracts.items():
             tool = tools.get(name)
             if (tool is None or tool.inputSchema != request.model_json_schema()
                     or tool.outputSchema != result.model_json_schema()):
                 raise LabError("mcp_tool_contract_mismatch")
-        yield LabClient(session, fixture_id)
+        yield lab
