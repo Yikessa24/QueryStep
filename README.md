@@ -1,17 +1,19 @@
 # QueryStep
 
-以 EpiKT 选择下一道 SQL 练习。MVP 验证真实 EpiKT 选题和规则对照。完整版加入真实 LLM 多轮辅导，并与模板提示独立对照。
+以 EpiKT 选择下一道 SQL 练习，以真实 SQL 执行与课程证据支持辅导。正式题保持 pyKT 评分流程；SQL 实作、提示后活动与首次独立作答分账，不把模型预测正确率当作掌握度。
 
 本地启动和学生端体验见 [QueryStep 本地启动与体验手册](docs/QueryStep%20本地启动与体验手册.md)。从数据准备到部署见 [操作指南](deploy/OPERATIONS.md)。当前验证范围及尚待验收的功能见 [工程审计报告](docs/工程审计与交付报告.md)。
 
 错题诊断先展示课程依据和实际 SQL 结果，再由 Gemini 补充讲解。学生可以调整查询条件，并保存下次可复用的学习记录。SQL Core 的 24 道题答错后均可做迁移练习，换一组数据验证同一考点，提交后查看 SQLite 的实际结果。完整启动与演示见操作手册第 1–4 节。架构、接口和验收记录见 [多 Agent 扩展开发文档](docs/QueryStep%20多%20Agent%20扩展开发文档.md)。
+
+新增 **SQL 实作工作台**：10 个任务支持学生编写查询、执行、反例验证与草稿恢复；LangGraph 教练通过任务绑定的 MCP 工具动态检查与检索。累计预算、取消恢复、引用验证、真实 token 用量均可查看。快速体验见手册第 8 节；不是任意 SQL 的完整沙箱，也不以有限测试宣称永久等价。
 
 | 目录 | 职责与当前进度 |
 |---|---|
 | data/ | DBE-KT22 官方归档及本地处理产物 |
 | data_pipeline/ | DBE 原始适配、pyKT 切分和数据指纹，已实现 |
 | kt/ | pyKT 源码定位、训练、权重校验和因果候选评分，已实现 |
-| evals/ | pyKT 题目窗口 late_mean 评估，已实现 |
+| evals/ | pyKT 题目窗口 late_mean、100 个固定 SQL 案例与四臂诊断比较 |
 | api/ | 学生会话、受约束选题、服务端判分、作答流水和决策回放 |
 | web/ | React / TypeScript 学生练习页和错题辅导 |
 | course_content/、tutor/、migrations/ | 审核题库、只读工具辅导 Agent 和数据库初始化说明 |
@@ -27,6 +29,8 @@ conda create --override-channels -c conda-forge -n querystep python=3.11 pip
 conda activate querystep
 python -m pip install -e '.[kt,api,test]'
 ```
+
+启用动态 SQL 教练还需安装 `python -m pip install -e '.[diagnostics]'` 并配置模型；向量检索另需 `.[knowledge]` 和课程索引。未配置教练不影响基本 SQL 运行与验证。
 
 在 Linux GPU 主机上，先按驱动安装匹配 CUDA 的 PyTorch 构建。研究目录中的 EpiKT 与 pyKT 实现是训练和评估的源码基准，项目代码只负责适配。
 

@@ -165,9 +165,28 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
                 app.state.coach = coach
             except Exception as error:
                 logger.warning("Coach startup failed (%s)", type(error).__name__)
+        app.state.workbench = None
+        app.state.workbench_reason = None
+        try:
+            from api.workbench import Workbench
+
+            knowledge_args = tuple(part for flag, value in (
+                ("--knowledge-index", os.environ.get("QUERYSTEP_KNOWLEDGE_INDEX")),
+                ("--embedding-model", os.environ.get("QUERYSTEP_EMBEDDING_MODEL")),
+            ) if value for part in (flag, str(Path(value).resolve())))
+            workbench = Workbench(app.state.practice,
+                                  model_id=os.environ.get("QUERYSTEP_COACH_MODEL", "gemini-3-flash"),
+                                  knowledge_args=knowledge_args)
+            await workbench.start()
+            app.state.workbench = workbench
+        except (ImportError, OSError, ValueError) as error:
+            app.state.workbench_reason = "startup_failed"
+            logger.warning("SQL workbench startup failed (%s)", type(error).__name__)
         try:
             yield
         finally:
+            if app.state.workbench:
+                await app.state.workbench.close()
             if app.state.coach:
                 await app.state.coach.close()
             if app.state.diagnostics:
@@ -196,6 +215,9 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
     ) -> str:
         return service(request).learner(querystep_session)
 
+    from api.workbench import router as workbench_router
+    app.include_router(workbench_router(learner))
+
     @app.get("/healthz")
     def health(request: Request):
         practice = service(request)
@@ -206,6 +228,10 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
                 ),
                 "tutor_ready": bool(practice.tutor.model),
                 "coach_ready": request.app.state.coach is not None,
+                "sql_workbench_ready": request.app.state.workbench is not None,
+                "sql_workbench_reason": request.app.state.workbench_reason,
+                "sql_coach_ready": request.app.state.workbench is not None and request.app.state.workbench.coach_reason is None,
+                "sql_coach_reason": request.app.state.workbench.coach_reason if request.app.state.workbench else "workbench_unavailable",
                 "tutor_status": "configured" if practice.tutor.model else practice.tutor.unavailable,
                 "diagnostics_ready": request.app.state.diagnostics is not None,
                 "mcp_ready": request.app.state.diagnostics is not None,

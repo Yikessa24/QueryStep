@@ -2,9 +2,11 @@
 
 import argparse
 import asyncio
+from hashlib import sha256
 import logging
 from pathlib import Path
 import sqlite3
+from threading import Event
 from uuid import uuid4
 
 from mcp.server.lowlevel import Server
@@ -15,10 +17,42 @@ from pydantic import ValidationError
 from course_content.diagnosis_cards import search
 from course_content.sql_fixtures import FIXTURES, GROUPING_FIXTURE
 from sql_lab.coach import experiment, search as coach_search
-from sql_lab.contracts import (COACH_SCOPE, TRANSFER_SCOPE, CoachExperimentRequest, CompareRequest, FixtureRequest,
-                               KnowledgeRequest, QueryRequest, SearchRequest, TransferRequest, contracts_for)
+from sql_lab.contracts import (COACH_SCOPE, TRANSFER_SCOPE, WORKBENCH_SCOPE, CheckStudentSQLRequest,
+                               CoachExperimentRequest, CompareRequest, FixtureRequest, InspectStudentSQLRequest,
+                               KnowledgeRequest, QueryRequest, RunStudentSQLRequest, SearchRequest,
+                               TransferRequest, contracts_for)
 from sql_lab.executor import LabError, compare, describe, execute
 from sql_lab.transfer import build_transfer
+
+
+async def _cancellable_workbench(function, **arguments) -> dict:
+    # Cancelling to_thread alone leaves its thread (and subsequent workers) alive.
+    cancel_event = Event()
+    try:
+        return await asyncio.to_thread(function, **arguments, cancel_event=cancel_event)
+    finally:
+        # Also runs for caller timeouts; CancelledError must propagate unchanged.
+        cancel_event.set()
+
+
+async def _workbench_result(request) -> dict:
+    """Load the optional SQL engine only for a workbench request; retain no observations."""
+    if not isinstance(request, InspectStudentSQLRequest):
+        from course_content.sql_tasks import task_view
+
+        return {**task_view(request.task_id), "task_id": request.task_id}
+
+    from sql_lab.workbench import evaluate, inspect_sql, run_query
+
+    identity = {"task_id": request.task_id, "sql_digest": sha256(request.sql.encode()).hexdigest()}
+    if isinstance(request, RunStudentSQLRequest):
+        result = await _cancellable_workbench(run_query, **request.model_dump())
+    elif isinstance(request, CheckStudentSQLRequest):
+        result = await _cancellable_workbench(evaluate, **request.model_dump())
+        identity.update(scenarios=request.scenarios, seed=request.seed)
+    else:
+        result = await asyncio.to_thread(inspect_sql, **request.model_dump())
+    return {**result, **identity}
 
 
 def create_server(fixture_id: str, index=None) -> Server:
@@ -42,6 +76,18 @@ def create_server(fixture_id: str, index=None) -> Server:
             request = contract[0].model_validate(arguments)
         except ValidationError as error:
             raise LabError("invalid_parameters") from error
+
+        if fixture_id == WORKBENCH_SCOPE:
+            try:
+                result = (await asyncio.to_thread(coach_search, request, index)
+                          if isinstance(request, KnowledgeRequest) else await _workbench_result(request))
+                return contract[1].model_validate(result).model_dump()
+            except ValidationError as error:
+                raise LabError("invalid_tool_result") from error
+            except Exception as error:
+                # Never expose SQL-engine exceptions, paths or runtime details over MCP.
+                logging.warning("Workbench tool unavailable (%s)", type(error).__name__)
+                raise LabError("workbench_tool_failed") from None
 
         if isinstance(request, TransferRequest):
             return build_transfer(**request.model_dump())
@@ -80,12 +126,13 @@ async def serve(fixture_id: str, index=None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture", choices=(*FIXTURES, TRANSFER_SCOPE, COACH_SCOPE), default=GROUPING_FIXTURE)
+    parser.add_argument("--fixture", choices=(*FIXTURES, TRANSFER_SCOPE, COACH_SCOPE, WORKBENCH_SCOPE),
+                        default=GROUPING_FIXTURE)
     parser.add_argument("--knowledge-index", type=Path)
     parser.add_argument("--embedding-model", type=Path)
     args = parser.parse_args()
     index = None
-    if args.fixture == COACH_SCOPE and args.knowledge_index:
+    if args.fixture in {COACH_SCOPE, WORKBENCH_SCOPE} and args.knowledge_index:
         from course_content.knowledge_index import Embedder, KnowledgeIndex
 
         embedder = None

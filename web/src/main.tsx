@@ -4,6 +4,7 @@ import CoachPanel from "./CoachPanel";
 import DiagnosisPanel from "./DiagnosisPanel";
 import TransferExercise from "./TransferExercise";
 import LearningMemories from "./LearningMemories";
+import SQLWorkbench from "./SQLWorkbench";
 import TutorPanel, { Turn } from "./TutorPanel";
 import "./style.css";
 
@@ -80,6 +81,11 @@ async function api<T>(path: string, body?: unknown, method = body === undefined 
 
 function App() {
   const [loaded, setLoaded] = useState(false);
+  const [workbench, setWorkbench] = useState<"practice" | "sql">("practice");
+  const [sqlVisited, setSqlVisited] = useState(false);
+  const [sqlSessionRevision, setSqlSessionRevision] = useState(0);
+  const sessionReady = useRef(false);
+  const sessionRequest = useRef<Promise<void> | null>(null);
   const [currentPractice, setPractice] = useState<Presentation | null>(null);
   const [currentFeedback, setFeedback] = useState<Feedback | null>(null);
   const [currentTurns, setTurns] = useState<Turn[]>([]);
@@ -116,6 +122,7 @@ function App() {
     let active = true;
     api<Progress>("/api/practice/progress").then((data) => {
       if (!active) return;
+      sessionReady.current = true;
       setProgress(data); setPractice(data.pending ?? data.last?.presentation ?? null);
       setFeedback(data.last?.feedback ?? null); setTurns(data.last?.turns ?? []); setChoice(data.last?.feedback.selected_option ?? null);
     }).catch((problem: unknown) => {
@@ -139,14 +146,27 @@ function App() {
   }, [error]);
   useEffect(() => {
     function choose(event: KeyboardEvent) {
-      if (!practice || feedback || busy || review || (mobilePanel === "assistant" && window.innerWidth <= 900) || event.ctrlKey || event.metaKey || event.altKey || dialog) return;
+      if (workbench !== "practice" || !practice || feedback || busy || review || (mobilePanel === "assistant" && window.innerWidth <= 900) || event.ctrlKey || event.metaKey || event.altKey || dialog) return;
       if ((event.target as HTMLElement).closest("input, textarea, select, button, [contenteditable]")) return;
       const index = Number(event.key) - 1;
       if (/^[1-9]$/.test(event.key) && index < practice.item.options.length) setChoice(index);
     }
     document.addEventListener("keydown", choose);
     return () => document.removeEventListener("keydown", choose);
-  }, [practice, feedback, busy, review, mobilePanel, dialog]);
+  }, [practice, feedback, busy, review, mobilePanel, dialog, workbench]);
+
+  function showWorkbench(next: "practice" | "sql") {
+    if (next === "sql") setSqlVisited(true);
+    setWorkbench(next); setMobilePanel("practice");
+  }
+  async function ensureSQLSession() {
+    if (sessionReady.current) return;
+    if (!sessionRequest.current) {
+      sessionRequest.current = api("/api/session", {}).then(() => { sessionReady.current = true; })
+        .finally(() => { sessionRequest.current = null; });
+    }
+    await sessionRequest.current;
+  }
 
   async function perform(work: () => Promise<void>, request: PendingRequest = "practice") {
     if (busy) return;
@@ -167,14 +187,15 @@ function App() {
   }
   function reviewItem(sequence: number) {
     return perform(async () => {
-      setReview(await api<Review>(`/api/practice/history/${sequence}`)); setReplay(null); setMobilePanel("practice"); setDialog(null);
+      setReview(await api<Review>(`/api/practice/history/${sequence}`)); setReplay(null); showWorkbench("practice"); setDialog(null);
     });
   }
   function returnToCurrent() { setReview(null); setReplay(null); setError(""); setMobilePanel("practice"); }
   function begin(restart = false) {
     return perform(async () => {
       await api("/api/session" + (restart ? "?restart=true" : ""), {});
-      if (restart) { setProgress({ total: 0, correct: 0 }); setRestartRequired(false); setFinished(null); }
+      sessionReady.current = true;
+      if (restart) { setProgress({ total: 0, correct: 0 }); setRestartRequired(false); setFinished(null); setSqlSessionRevision((value) => value + 1); }
       await nextItem();
     });
   }
@@ -202,16 +223,17 @@ function App() {
   function openTutor() { setAssistantTab("tutor"); setMobilePanel("assistant"); setFocusVersion((value) => value + 1); }
 
   return <div className={`app-shell mobile-${mobilePanel}`}>
-    <a className="skip-link" href="#practice-workspace" onClick={() => setMobilePanel("practice")}>跳到练习区</a>
+    <a className="skip-link" href={workbench === "sql" ? "#sql-workspace" : "#practice-workspace"} onClick={() => setMobilePanel("practice")}>跳到练习区</a>
     <header className="topbar">
-      <a className="brand" href="#practice-workspace" onClick={() => setMobilePanel("practice")} aria-label="QueryStep 练习工作台"><span className="brand-mark">Q<span /></span><span>QueryStep<span className="brand-dot">.</span></span></a>
-      <div className="topbar-center"><span>学习空间</span><Icon name="chevron" size={13} /><strong>SQL 基础查询</strong></div>
-      <div className="topbar-right"><span className="local-session"><span className="status-dot" />本机学习会话</span><button type="button" className="icon-button" aria-label="使用指南" onClick={() => setDialog("guide")}><Icon name="help" /></button><span className="profile-avatar" aria-label="学习者">L</span></div>
+      <a className="brand" href="#practice-workspace" onClick={() => showWorkbench("practice")} aria-label="QueryStep 练习工作台"><span className="brand-mark">Q<span /></span><span>QueryStep<span className="brand-dot">.</span></span></a>
+      <div className="topbar-center"><span>学习空间</span><Icon name="chevron" size={13} /><strong>{workbench === "sql" ? "SQL 实作" : "SQL 基础查询"}</strong></div>
+      <div className="topbar-right"><button className="mobile-workbench-entry secondary" disabled={!loaded} onClick={() => showWorkbench(workbench === "sql" ? "practice" : "sql")}>{workbench === "sql" ? "正式练习" : "SQL 实作"}</button><span className="local-session"><span className="status-dot" />本机学习会话</span><button type="button" className="icon-button" aria-label="使用指南" onClick={() => setDialog("guide")}><Icon name="help" /></button><span className="profile-avatar" aria-label="学习者">L</span></div>
     </header>
 
     <aside className="sidebar" aria-label="学习导航">
       <div><p className="nav-caption">WORKSPACE</p><nav className="side-nav">
-        <button className="nav-item active" onClick={() => { setMobilePanel("practice"); workspace.current?.scrollTo({ top: 0, behavior: "smooth" }); }}><Icon name="grid" />练习工作台<span className="nav-active-dot" /></button>
+        <button className={`nav-item${workbench === "practice" ? " active" : ""}`} aria-label="练习工作台" title="练习工作台" aria-current={workbench === "practice" ? "page" : undefined} onClick={() => { showWorkbench("practice"); workspace.current?.scrollTo({ top: 0, behavior: "smooth" }); }}><Icon name="grid" />练习工作台{workbench === "practice" && <span className="nav-active-dot" />}</button>
+        <button className={`nav-item${workbench === "sql" ? " active" : ""}`} aria-label="SQL 实作" title="SQL 实作" disabled={!loaded} aria-current={workbench === "sql" ? "page" : undefined} onClick={() => showWorkbench("sql")}><span className="sql-nav-icon" aria-hidden="true">SQL</span>SQL 实作{workbench === "sql" && <span className="nav-active-dot" />}</button>
         <button className="nav-item" onClick={() => setDialog("records")}><Icon name="book" />学习记录{progress.total > 0 && <span className="nav-count">{progress.total}</span>}</button>
       </nav></div>
       <div className="sidebar-progress"><p className="nav-caption">你的每一步，都算数</p><div className="progress-numbers"><div><strong>{progress.total.toString().padStart(2, "0")}</strong><span>已作答</span></div><div><strong>{progress.correct.toString().padStart(2, "0")}</strong><span>答对</span></div></div>
@@ -221,7 +243,7 @@ function App() {
       <div className="sidebar-bottom"><div className="adaptive-card"><span className="adaptive-icon"><Icon name="spark" size={18} /></span><h3>不是题海，是下一步</h3><p>依据正式作答记录，安排更适合的下一题。</p><button className="text-button" onClick={() => setDialog("recommendation")}>了解选题方式 <Icon name="arrow" size={15} /></button></div><span className="sidebar-footnote">一步一题，循序而进。</span></div>
     </aside>
 
-    <main className="workspace-scroll" id="practice-workspace" ref={workspace} tabIndex={-1}>
+    <main className="workspace-scroll" id="practice-workspace" ref={workspace} tabIndex={-1} hidden={workbench !== "practice"}>
       <div className="workspace-inner">
         <div className="workspace-heading"><div><p className="eyebrow">LEARN. QUERY. GROW.</p><h1>练习工作台</h1></div><button className="mobile-records icon-button" aria-label="查看学习记录" onClick={() => setDialog("records")}><Icon name="book" /></button><span className="workspace-label"><span />专注当下这一题</span></div>
         {error && <p className="error" role="alert">{error}</p>}
@@ -263,13 +285,15 @@ function App() {
       </div>
     </main>
 
-    <aside className="assistant-sidebar" aria-label="学习助教">
+    <aside className="assistant-sidebar" aria-label="学习助教" hidden={workbench !== "practice"}>
       <div className="assistant-header"><div className="assistant-title"><span className="assistant-symbol"><Icon name="spark" size={19} /></span><div><h2>学习助教</h2><p>思路有人陪，答案自己找。</p></div></div><button className="icon-button mobile-close" aria-label="返回练习" onClick={() => setMobilePanel("practice")}><Icon name="close" /></button><span className="ai-label">AI</span></div>
       <div className="assistant-tabs" role="tablist" aria-label="辅导方式"><button id="tutor-tab" role="tab" aria-controls="tutor-pane" aria-selected={assistantTab === "tutor"} tabIndex={assistantTab === "tutor" ? 0 : -1} onClick={() => setAssistantTab("tutor")} onKeyDown={(event) => { if (event.key === "ArrowRight") { setAssistantTab("coach"); document.getElementById("coach-tab")?.focus(); } }}>对话辅导</button><button id="coach-tab" role="tab" aria-controls="coach-pane" aria-selected={assistantTab === "coach"} tabIndex={assistantTab === "coach" ? 0 : -1} onClick={() => setAssistantTab("coach")} onKeyDown={(event) => { if (event.key === "ArrowLeft") { setAssistantTab("tutor"); document.getElementById("tutor-tab")?.focus(); } }}>错题教练<span>实验验证</span></button></div>
       {practice && <div className="assistant-context"><span>当前{review ? "回看" : "题目"}</span><strong>{practice.item.title} · {topic}</strong>{review && <span className="subtle-badge">只读</span>}</div>}
       <div className="assistant-pane" id="tutor-pane" role="tabpanel" aria-labelledby="tutor-tab" hidden={assistantTab !== "tutor"}><TutorPanel turns={turns} message={message} pendingMessage={pendingMessage} pending={tutorPending} busy={busy} enabled={wrong && !review} readOnly={!!review} hasQuestion={!!practice} correct={feedback?.correct === true} error={tutorError} focusVersion={focusVersion} decisionId={practice?.decision_id} onMessage={setMessage} onSubmit={ask} /></div>
       <div className="assistant-pane" id="coach-pane" role="tabpanel" aria-labelledby="coach-tab" hidden={assistantTab !== "coach"}>{practice && wrong ? <CoachPanel key={practice.decision_id} decisionId={practice.decision_id} request={api} readOnly={!!review} /> : <div className="assistant-welcome coach-introduction"><div className="empty-icon"><Icon name="spark" size={28} /></div><h2>用证据，拆解一个疑问</h2><p>教练会查课程、运行 SQL，并根据结果决定下一步验证。</p><div className="coach-steps"><span>查找依据</span><Icon name="chevron" size={13} /><span>对照实验</span><Icon name="chevron" size={13} /><span>梳理结论</span></div><p className="helper-text">目前支持部分 HAVING 与 LEFT JOIN 错题；提交对应题目后可用，其他错题可使用对话辅导。</p></div>}</div>
     </aside>
+
+    {sqlVisited && <SQLWorkbench key={sqlSessionRevision} active={workbench === "sql"} request={api} ensureSession={ensureSQLSession} onPractice={() => setMobilePanel("practice")} onAssistant={() => setMobilePanel("assistant")} />}
 
     <nav className="mobile-switch" aria-label="切换学习面板"><button className={mobilePanel === "practice" ? "active" : ""} onClick={() => setMobilePanel("practice")}><Icon name="grid" size={19} />练习</button><button className={mobilePanel === "assistant" ? "active" : ""} onClick={() => setMobilePanel("assistant")}><Icon name="chat" size={19} />助教{tutorPending && <span className="status-dot" />}</button></nav>
 

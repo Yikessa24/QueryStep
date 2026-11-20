@@ -1,3 +1,4 @@
+import asyncio
 import json
 from dataclasses import replace
 import unittest
@@ -27,12 +28,79 @@ class TutorTest(unittest.TestCase):
 
         model = ChatModel("https://example.invalid/v1", "test", None, transport=httpx.MockTransport(handle))
         self.addCleanup(model.close)
+        usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
         with measure_calls() as outer:
             self.assertEqual(model.reply([], [], 1), {"content": "ok"})
             with measure_calls() as inner:
                 model.reply([], [], 1)
-            self.assertEqual(inner, outer)
-            self.assertEqual(outer, [{"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}])
+                with measure_calls() as nested:
+                    model.reply([], [], 1)
+            self.assertEqual(nested, [usage])
+            self.assertEqual(inner, [usage, usage])
+            self.assertEqual(outer, [usage, usage, usage])
+            self.assertIs(outer[1], inner[0])
+            self.assertIs(outer[2], nested[0])
+            model.reply([], [], 1)
+        model.reply([], [], 1)  # Leaving the scope restores the unmetered context.
+        self.assertEqual(len(outer), 4)
+        self.assertEqual(len(inner), 2)
+
+    def test_provider_nested_failure_restores_outer_and_keeps_usage_unknown(self):
+        responses = iter([
+            httpx.Response(503),
+            httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": True, "completion_tokens": -1, "total_tokens": "5"}}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]}),
+        ])
+        model = ChatModel("https://example.invalid/v1", "test", None,
+                          transport=httpx.MockTransport(lambda request: next(responses)))
+        self.addCleanup(model.close)
+        with measure_calls() as outer:
+            with self.assertRaises(httpx.HTTPStatusError):
+                with measure_calls() as inner:
+                    with measure_calls() as nested:
+                        model.reply([], [], 1)
+            self.assertEqual(outer, [{"error": "http_error", "http_status": 503}])
+            self.assertIs(outer[0], nested[0])
+            self.assertIs(inner[0], nested[0])
+            model.reply([], [], 1)
+            model.reply([], [], 1)
+        failure = {"error": "http_error", "http_status": 503}
+        self.assertEqual(outer, [failure, {}, {}])
+        self.assertEqual(inner, [failure])
+
+    def test_provider_failure_diagnostics_exclude_sensitive_details(self):
+        async def check():
+            for asynchronous in (False, True):
+                for response, expected in (
+                    (httpx.Response(429, json={"error": "SECRET"}), {"error": "http_error", "http_status": 429}),
+                    (httpx.Response(200, content="SECRET"), {"error": "invalid_response"}),
+                    (httpx.Response(200, json=[]), {"error": "invalid_response"}),
+                    (httpx.ReadTimeout("SECRET"), {"error": "transport_timeout"}),
+                    (httpx.ConnectError("SECRET"), {"error": "transport_error"}),
+                ):
+                    with self.subTest(asynchronous=asynchronous, expected=expected):
+                        def handle(request):
+                            if isinstance(response, Exception):
+                                raise response
+                            return response
+                        model = ChatModel("https://example.invalid/v1", "test", "SECRET",
+                                          transport=httpx.MockTransport(handle))
+                        model._async_client = httpx.AsyncClient(base_url=model.client.base_url,
+                                                               transport=httpx.MockTransport(handle))
+                        try:
+                            with measure_calls() as calls:
+                                with self.assertRaises((httpx.HTTPError, ValueError, AttributeError)):
+                                    if asynchronous:
+                                        await model.reply_json([], 1, model="test")
+                                    else:
+                                        model.reply([], [], 1)
+                            self.assertEqual(calls, [expected])
+                            self.assertNotIn("SECRET", json.dumps(calls))
+                        finally:
+                            model.close()
+                            await model.aclose()
+        asyncio.run(check())
 
     def test_two_turns_adapt_and_use_returned_tools(self):
         item = Catalog.load(DEFAULT_CATALOG).items[2]

@@ -12,12 +12,16 @@ _meter: ContextVar[list[dict] | None] = ContextVar("provider_meter", default=Non
 
 @contextmanager
 def measure_calls():
+    """Measure this scope, forwarding each call once to its enclosing scope."""
+    parent = _meter.get()
     calls: list[dict] = []
     token = _meter.set(calls)
     try:
         yield calls
     finally:
         _meter.reset(token)
+        if parent is not None:
+            parent.extend(calls)
 
 
 def _loopback(host: str) -> bool:
@@ -67,7 +71,12 @@ class ChatModel:
         if response_format:
             body["response_format"] = response_format
         record = self._start_call()
-        response = self.client.post("chat/completions", json=body, timeout=timeout)
+        try:
+            response = self.client.post("chat/completions", json=body, timeout=timeout)
+        except httpx.RequestError as error:
+            if record is not None:
+                record["error"] = "transport_timeout" if isinstance(error, httpx.TimeoutException) else "transport_error"
+            raise
         return self._read_message(response, record)
 
     def _request_body(self, messages, *, model=None, max_tokens=150):
@@ -82,7 +91,12 @@ class ChatModel:
         body = self._request_body(messages, model=model, max_tokens=max_tokens)
         body["response_format"] = {"type": "json_object"}
         record = self._start_call()
-        response = await self._async_client.post("chat/completions", json=body, timeout=timeout)
+        try:
+            response = await self._async_client.post("chat/completions", json=body, timeout=timeout)
+        except httpx.RequestError as error:
+            if record is not None:
+                record["error"] = "transport_timeout" if isinstance(error, httpx.TimeoutException) else "transport_error"
+            raise
         return self._read_message(response, record)
 
     @staticmethod
@@ -96,15 +110,22 @@ class ChatModel:
 
     @staticmethod
     def _read_message(response, record):
+        if record is not None and not response.is_success:
+            record.update(error="http_error", http_status=response.status_code)
         response.raise_for_status()
-        payload = response.json()
-        if record is not None and isinstance(payload.get("usage"), dict):
-            record.update({name: count for name, count in payload["usage"].items()
-                           if name in {"prompt_tokens", "completion_tokens", "total_tokens"}
-                           and type(count) is int and count >= 0})
-        message = payload["choices"][0]["message"]
-        if not isinstance(message, dict):
-            raise ValueError("Model response did not contain a message object.")
+        try:
+            payload = response.json()
+            if record is not None and isinstance(payload.get("usage"), dict):
+                record.update({name: count for name, count in payload["usage"].items()
+                               if name in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                               and type(count) is int and count >= 0})
+            message = payload["choices"][0]["message"]
+            if not isinstance(message, dict):
+                raise ValueError("Model response did not contain a message object.")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            if record is not None:
+                record["error"] = "invalid_response"
+            raise
         return message
 
     def close(self):

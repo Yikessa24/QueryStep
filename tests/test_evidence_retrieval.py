@@ -2,10 +2,12 @@
 
 import importlib.util
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from course_content.evidence_retrieval import CONCEPTS, retrieve_evidence, split_concepts
-from course_content.knowledge_index import load_lessons
+from course_content.knowledge_index import KnowledgeIndex, _digest, build, load_lessons, search_lessons
 
 
 QUESTION = "外连接后，没下单的顾客还在吗？COUNT(*) 会把那一行算进去吗？"
@@ -25,6 +27,43 @@ class MissingEvidenceIndex:
 
 
 class EvidenceRetrievalTest(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("numpy"), "Install knowledge extras.")
+    def test_hybrid_prioritizes_explicit_sum_over_general_null_matches(self):
+        import numpy as np
+
+        class NullBiasedEmbedder:
+            identity = "test-null-biased"
+
+            def encode(self, texts, *, query=False):
+                return np.asarray([(0, 1) if "SUM 保留求和" in text and not query else (1, 0) for text in texts])
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "knowledge.sqlite3"
+            embedder = NullBiasedEmbedder()
+            build(path, embedder)
+            index = KnowledgeIndex(path, embedder)
+            try:
+                result = index.search("SUM NULL empty table", "aggregate")
+                self.assertEqual(result["mode"], "hybrid")
+                self.assertEqual(result["cards"][0]["id"], "count/sum-null")
+            finally:
+                index.close()
+
+    def test_reviewed_fallback_covers_workbench_without_embeddings(self):
+        expected = (("SUM 空表", "aggregate", "count/sum-null"),
+                    ("ORDER BY LIMIT 并列", "select", "select-projection/ordered-limit"),
+                    ("COUNT(*)", "join", "count/row-count"),
+                    ("DISTINCT 去重", "distinct", "distinct/whole-row"))
+        for query, topic, identifier in expected:
+            with self.subTest(query=query):
+                result = search_lessons(query, topic)
+                self.assertIn(identifier, [card["id"] for card in result["cards"]])
+                self.assertEqual(result["mode"], "reviewed_cards")
+                self.assertEqual(result["corpus"], _digest(load_lessons()))
+                self.assertTrue(all(card["reviewed_on"] for card in result["cards"]))
+        self.assertFalse(search_lessons("zzzz_unrelated_token")["cards"])
+        self.assertFalse(search_lessons("MySQL JSON_TABLE COUNT(*)")["cards"])
+
     def test_retry_targets_only_the_missing_claim(self):
         result = retrieve_evidence(MissingEvidenceIndex(), QUESTION, "join")
         self.assertEqual([step["goal"] for step in result["passes"]],

@@ -2,7 +2,7 @@
 
 from time import monotonic
 
-from course_content.diagnosis_cards import search as reviewed_search
+from course_content.knowledge_index import search_lessons
 from course_content.evidence_retrieval import retrieve_evidence
 from course_content.sql_fixtures import JOIN_FIXTURE, JOIN_VARIANT, grouping
 from sql_lab.contracts import KnowledgeResult
@@ -49,9 +49,4 @@ def search(request, index):
                         goal["card_id"] = None
             return KnowledgeResult.model_validate(result).model_dump()
         return index.search(request.query, request.topic, request.top_k, request.mode)
-    cards = [{
-        "id": row["id"], "title": row["title"], "parent": row["section"], "text": row["text"],
-        "keywords": "", "experiment": None, "version": row["version"], "topic": row["topic"],
-        "dialect": "sql", "source_url": row["url"], "source_section": row["section"], "reviewed_on": "",
-    } for row in reviewed_search(request.query, request.topic, request.top_k) if row["match_score"] > 0]
-    return {"cards": cards, "mode": "reviewed_cards", "corpus": "reviewed-cards-v1", "elapsed_ms": 0.0}
+    return search_lessons(request.query, request.topic, request.top_k)

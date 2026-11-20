@@ -231,6 +231,166 @@ COACH_CONTRACTS = {
 }
 
 
+WORKBENCH_SCOPE = "workbench"
+DESCRIBE_SQL_TASK_TOOL = "describe_sql_task"
+INSPECT_STUDENT_SQL_TOOL = "inspect_student_sql"
+RUN_STUDENT_SQL_TOOL = "run_student_sql"
+CHECK_STUDENT_SQL_TOOL = "check_student_sql"
+
+TaskId = Literal["filter_paid", "null_contacts", "distinct_cities", "group_counts", "having_totals",
+                 "inner_join_orders", "left_join_counts", "left_join_filter", "sum_totals", "order_top"]
+Scenario = Literal["sample", "boundary", "empty", "duplicates"]
+WORKBENCH_SCENARIOS = ("sample", "boundary", "empty", "duplicates")
+SQLDigest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+Seed = Annotated[int, Field(ge=0, le=1_000_000)]
+SQLValue = str | int | Annotated[float, Field(allow_inf_nan=False)] | None
+
+
+class SQLTaskRequest(Contract):
+    task_id: TaskId
+
+
+class InspectStudentSQLRequest(SQLTaskRequest):
+    sql: str = Field(min_length=1, max_length=6000)
+
+
+class RunStudentSQLRequest(InspectStudentSQLRequest):
+    scenario: Scenario = "sample"
+    seed: Seed = 0
+
+
+class CheckStudentSQLRequest(InspectStudentSQLRequest):
+    scenarios: list[Scenario] = Field(default_factory=lambda: list(WORKBENCH_SCENARIOS),
+                                      min_length=1, max_length=4)
+    seed: Seed = 0
+
+    @model_validator(mode="after")
+    def validate_scenarios(self):
+        if len(set(self.scenarios)) != len(self.scenarios):
+            raise ValueError("Scenarios must be distinct.")
+        return self
+
+
+class SQLTaskTable(Contract):
+    name: str
+    columns: list[str] = Field(min_length=1)
+    types: list[str] = Field(min_length=1)
+    rows: list[list[SQLValue]]
+
+    @model_validator(mode="after")
+    def validate_shape(self):
+        if (len(self.types) != len(self.columns) or len(set(self.columns)) != len(self.columns)
+                or any(len(row) != len(self.columns) for row in self.rows)):
+            raise ValueError("Table types, columns and rows must match.")
+        return self
+
+
+class SQLTaskDescription(SQLTaskRequest):
+    id: TaskId
+    title: str
+    prompt: str
+    topic: str
+    concepts: list[str]
+    starter_sql: str
+    dialect: Literal["sqlite"]
+    version: int = Field(ge=1)
+    tables: list[SQLTaskTable] = Field(min_length=1)
+    ordered: bool
+
+    @model_validator(mode="after")
+    def validate_task(self):
+        if self.id != self.task_id or len({table.name for table in self.tables}) != len(self.tables):
+            raise ValueError("Task identity and table names must be consistent.")
+        return self
+
+
+class StudentSQLIdentity(SQLTaskRequest):
+    sql_digest: SQLDigest
+
+
+class InspectStudentSQLResult(StudentSQLIdentity):
+    valid: bool
+    error: str | None
+
+    @model_validator(mode="after")
+    def validate_status(self):
+        if self.valid != (self.error is None):
+            raise ValueError("Inspection status and error must agree.")
+        return self
+
+
+class StudentQueryResult(Contract):
+    status: Literal["ok", "rejected", "error", "timeout"]
+    columns: list[str]
+    rows: list[list[SQLValue]]
+    row_count: int = Field(ge=0)
+    error: str | None
+    elapsed_ms: float = Field(ge=0, allow_inf_nan=False)
+    fingerprint: str
+    scenario: Scenario
+    seed: Seed
+
+    @model_validator(mode="after")
+    def validate_rows(self):
+        if self.row_count != len(self.rows) or any(len(row) != len(self.columns) for row in self.rows):
+            raise ValueError("Query counts and columns must match the rows.")
+        if (self.status == "ok") != (self.error is None):
+            raise ValueError("Query status and error must agree.")
+        return self
+
+
+class RunStudentSQLResult(StudentQueryResult, StudentSQLIdentity):
+    pass
+
+
+class SQLCounterexample(Contract):
+    scenario: Scenario
+    seed: Seed
+    tables: list[SQLTaskTable] = Field(min_length=1)
+    actual: StudentQueryResult
+    expected: StudentQueryResult
+
+    @model_validator(mode="after")
+    def validate_context(self):
+        if any(result.scenario != self.scenario or result.seed != self.seed
+               for result in (self.actual, self.expected)):
+            raise ValueError("Counterexample query context must match its dataset.")
+        return self
+
+
+class CheckStudentSQLResult(StudentSQLIdentity):
+    scenarios: list[Scenario] = Field(min_length=1, max_length=4)
+    seed: Seed
+    status: Literal["passed", "mismatch", "rejected", "error", "timeout"]
+    passed: bool
+    checked: int = Field(ge=0, le=4)
+    total: int = Field(ge=1, le=4)
+    counterexample: SQLCounterexample | None
+    message: str
+    query_result: StudentQueryResult | None
+
+    @model_validator(mode="after")
+    def validate_evaluation(self):
+        if (len(set(self.scenarios)) != len(self.scenarios) or self.total != len(self.scenarios)
+                or self.checked > self.total or self.passed != (self.status == "passed")
+                or (self.passed and (self.checked != self.total or self.counterexample is not None))
+                or (self.status == "mismatch" and self.counterexample is None)):
+            raise ValueError("Evaluation status and counts must be consistent.")
+        for evidence in (self.counterexample, self.query_result):
+            if evidence is not None and (evidence.scenario not in self.scenarios or evidence.seed != self.seed):
+                raise ValueError("Evaluation evidence must match the requested scenarios and seed.")
+        return self
+
+
+WORKBENCH_CONTRACTS = {
+    DESCRIBE_SQL_TASK_TOOL: (SQLTaskRequest, SQLTaskDescription, "读取 SQL 任务公开题面、表结构和样本，不返回参考 SQL。"),
+    INSPECT_STUDENT_SQL_TOOL: (InspectStudentSQLRequest, InspectStudentSQLResult, "检查学生 SQL 是否符合受限只读规则。"),
+    RUN_STUDENT_SQL_TOOL: (RunStudentSQLRequest, RunStudentSQLResult, "在指定合成场景中执行受限学生 SQL。"),
+    CHECK_STUDENT_SQL_TOOL: (CheckStudentSQLRequest, CheckStudentSQLResult, "在指定有限场景中验证学生 SQL 并返回反例。"),
+    KNOWLEDGE_TOOL: COACH_CONTRACTS[KNOWLEDGE_TOOL],
+}
+
+
 TOOL_CONTRACTS = {
     "search_course_notes": (SearchRequest, SearchResult, "检索审核过的 SQL 课程资料。"),
     "describe_fixture": (FixtureRequest, FixtureDescription, "读取合成数据的表结构与查询模板。"),
@@ -242,6 +402,7 @@ ROLE_TOOLS = {
     "experiment": frozenset({"describe_fixture", "run_example_query", "compare_example_results"}),
     "transfer": frozenset({TRANSFER_TOOL}),
     "coach": frozenset(COACH_CONTRACTS),
+    "workbench": frozenset(WORKBENCH_CONTRACTS),
 }
 
 
@@ -250,4 +411,6 @@ def contracts_for(scope):
         return {TRANSFER_TOOL: TRANSFER_CONTRACT}
     if scope == COACH_SCOPE:
         return COACH_CONTRACTS
+    if scope == WORKBENCH_SCOPE:
+        return WORKBENCH_CONTRACTS
     return TOOL_CONTRACTS

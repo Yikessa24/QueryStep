@@ -123,4 +123,14 @@ python -m unittest discover -s tests -p test_practice_api.py -v
 
 本机 Docker Compose 预览见 [部署说明](README.md)。配置 `QUERYSTEP_DB_PASSWORD` 后运行 `docker compose config --quiet` 和 `docker compose up --build`，浏览器访问本地 8080 端口。Compose 以 PostgreSQL 保存学生状态，并可配置 LLM。正式权重接入可用前述本地 Conda 环境和获准题库。
 
-用于公开学生服务前，应补做真实模型联调、完整容器验证、服务入口鉴权和请求限流，并通过 HTTPS 提供学生端。当前匿名 Cookie 按浏览器隔离学习状态，适用于本机或受控演示。跨设备身份、公开服务和正式学习效果是独立验收范围。
+当前匿名 Cookie 按浏览器隔离学习状态，适用于本机或受控演示，不是完整账号鉴权。公开服务前仍需入口鉴权、跨会话限流、容器/低权限用户隔离、HTTPS 和部署验收；本地真实模型与浏览器验证不能替代这些要求。
+
+### SQL 实作的运行边界
+
+- 安装 `.[api,diagnostics]`；向量检索另需 `.[knowledge]`。`/healthz` 分别报告 `sql_workbench_ready` 和 `sql_coach_ready`：能运行 SQL 不等于模型与教练依赖可用，ready 也不代表提供方网络可达。
+- 使用单个 Uvicorn worker。每进程最多 2 个实作任务并行、总排队阈值 24、每学习会话最多 1 个活动任务和每分钟 20 次新提交；匿名会话可以重新建立，因此这不是公开服务的全局滥用防护。
+- SQLite 子进程不继承模型密钥环境；SQLGlot AST、SQLite authorizer、函数/表白名单及行数、结果大小、CPU、内存和时间限制共同收窄执行面。支持 macOS/Linux，不能宣称能防御解释器或 SQLite 原生漏洞的完整 OS 沙箱。
+- SQL 草稿、运行证据和教练检查点保存在应用数据库的 `sql_drafts`、`sql_runs`，启动时建表，不会重写旧的正式作答流水。备份时包含这两张表；已有 SQL 运行、SQL 文本和笔记属于学习数据，不应提交到 Git。
+- 恢复使用同一运行 ID、任务/提示/模型版本、已确认笔记版本和累计预算；任务或笔记变化需要重新提交。主动取消不恢复，进程中断通过租约识别后可恢复。单轮教练最多 5 次模型请求、6 次工具调用、20 秒活动预算；冷启动 MCP 时间另计入整次耗时。
+- 引用来自真实工具观察或课程原文。模型/工具失败时保留证据并显示降级；token 由提供方实际返回，未返回时为 null，未知费用不记为零。教练运行的 `metrics.model_records[].provider_failures` 记录 HTTP 状态和传输/格式失败类别，不记录异常正文、地址、请求头或密钥；不会自动追加付费重试。
+- 正式 EpiKT 沿用 pyKT 流程与原权重，实作使用独立账本。学习上下文仅引用已有正式题的预测快照，不能解释成对生成任务的预测或掌握程度。

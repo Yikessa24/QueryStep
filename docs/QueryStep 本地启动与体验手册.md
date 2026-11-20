@@ -1,6 +1,6 @@
 # QueryStep 本地启动与体验手册
 
-在这台 Mac 上，按第 1～3 节可以走完一次「做题 → EpiKT 选题 → 错题诊断 → 迁移练习 → 下次辅导」。想直接体验新版的**跨考点检索**，启动后走第 4 节。
+在这台 Mac 上，按第 1～3 节可以走完一次「做题 → EpiKT 选题 → 错题诊断 → 迁移练习 → 下次辅导」。跨考点检索见第 4 节；新版 **SQL 实作与动态实验教练**见第 8 节，不必先做完正式题。
 
 平时在原来的浏览器窗口练习，网页会恢复进度，按自己的判断作答。下面的固定选项用于复现特定题目和错题反馈。希望从第一题演示并保留原进度时，再另开无痕窗口。
 
@@ -153,14 +153,14 @@ QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 ./start.sh
 ```bash
 cd "$HOME/Desktop/实习/projects/QueryStep"
 export QUERYSTEP_EMBEDDING_MODEL="$PWD/../examples/居丽叶简历项目7：医疗助手/medix-agent-swarm/.venv/models/bge-small-zh-v1.5"
-export QUERYSTEP_KNOWLEDGE_INDEX="$PWD/artifacts/coach/knowledge.sqlite3"
+export QUERYSTEP_KNOWLEDGE_INDEX="$PWD/artifacts/workbench-knowledge.sqlite3"
 artifacts/diagnostics-venv/bin/python -m pip install -e '.[knowledge]'
 artifacts/diagnostics-venv/bin/python -m course_content.knowledge_index \
   --output "$QUERYSTEP_KNOWLEDGE_INDEX" --model "$QUERYSTEP_EMBEDDING_MODEL"
 QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
 ```
 
-如果本地 `.env` 已经写了两个索引变量，启动时以 `.env` 读入的值为准。重建到新位置后，将 `.env` 内对应路径更新为实际位置，再启动。索引缺失时教练回退到审核卡片，模型和索引不匹配时回退到关键词检索。
+如果本地 `.env` 已经写了两个索引变量，启动时以 `.env` 读入的值为准。将其中的 `QUERYSTEP_KNOWLEDGE_INDEX` 指向上面生成的文件，再启动。索引缺失时教练回退到审核卡片或课程关键词检索，模型和索引不匹配时使用关键词检索。
 
 ## 7. 单独确认 Gemini 服务
 
@@ -175,3 +175,98 @@ artifacts/diagnostics-venv/bin/python -m tutor.check_provider
 ```
 
 查看探针是否返回模型与检查结果。遇到 `ReadTimeout` 时可以先用网页的快速诊断和迁移练习，模型联通后再试辅导。跨考点检索实现、评估和补查的实测范围见开发方案。 [自主错题教练与课程知识库开发方案](QueryStep%20自主错题教练与课程知识库开发方案.md)
+
+## 8. SQL 实作与动态实验教练
+
+更新代码后，先在原启动终端按 `Ctrl+C`，再按第 1 节启动，避免旧进程继续运行旧后端。环境需包含 `api` 和 `diagnostics` 扩展；缺少时运行 `artifacts/diagnostics-venv/bin/python -m pip install -e '.[api,diagnostics]'`。新版课程新增 SUM 与排序规则，已有向量索引按第 6.2 节重建；未配置索引时仍可检索全部审核课程的关键词。
+
+1. 点击「SQL 实作」（手机在顶部切换）。无需先提交正式题；原练习进度和未发送的辅导输入不会被清空。
+2. 在任务选择框选择「保留零订单客户的计数」。先看需求、表结构与样例数据，然后在「你的 SQL」输入：
+
+```sql
+SELECT c.customer_id, COUNT(*) AS order_count
+FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id
+GROUP BY c.customer_id
+```
+
+3. 点击「运行 SQL」：样例可以执行，不能据此判定正确。点击「提交验证」：展开反例，找出预期为 0、实际为 1 的客户，并对照输入表中的未匹配记录。
+4. 在固定右侧「实验教练」提问：**“样本看起来正常，请检查没有订单的客户和重复订单的边界，用实际结果给我提示，不要直接给答案。”** 教练动态选择检查、检索或执行工具；展开「执行轨迹」「查看实验依据」「运行指标」查看真实调用。模型失败时显示降级原因，不能把降级提示当作模型成功。
+5. 自己修改计数对象为右表订单主键，再次「提交验证」。应通过 4 组有限场景；页面仍明确提示这不是所有数据上的 SQL 等价性证明。
+6. 刷新页面验证草稿保存；切换其他任务再返回，编辑内容应保留。另一标签页更新同一草稿会提示冲突，不会静默覆盖；可读取远端版本，并保留冲突前本地 SQL 供复制。
+7. 运行过程中可在右侧「最近实验」取消。服务中断后显示「恢复执行」，继续使用已保存证据和累计预算；主动取消不能恢复。任务或已确认学习笔记版本发生变化时，需要重新提交。
+
+10 个任务覆盖条件筛选、NULL、去重、分组计数、HAVING、内外连接、求和和排序。只允许受限 SQLite SELECT；写入、外部文件访问、过大的查询或结果会被拒绝。错误提示会保留输入，不会修改正式题答案。
+
+「学习上下文」展示提交时的首次独立作答、已确认笔记和正式题 EpiKT 预测快照。要观察真实预测，先按第 2 节完成三次独立作答并请求下一题，再到对应主题的实作提问；未作答或没有同主题候选时，应显示无预测而不是编造分数。实作与教练提示均不增加正式已答题数。
+
+### 8.1 隔离验收，不影响原来的学习记录
+
+另开终端，使用新的本地测试数据库，不要复用正式学习数据库；保留原来的 8000/5173 服务。
+
+```bash
+cd "$HOME/Desktop/实习/projects/QueryStep"
+set -a; source ./.env; set +a
+export QUERYSTEP_DATABASE_URL="sqlite:///$PWD/artifacts/workbench-local-test.sqlite3"
+export QUERYSTEP_DIAGNOSIS_CHECKPOINTS="$PWD/artifacts/workbench-local-test.checkpoints.sqlite3"
+export QUERYSTEP_EPIKT_RUN="$PWD/artifacts/epikt-dbe-fold0"
+export QUERYSTEP_CATALOG="$PWD/artifacts/dbe-sql-approved.json"
+export QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_COACH_ENABLED=1
+artifacts/diagnostics-venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8001
+```
+
+再开终端：
+
+```bash
+cd "$HOME/Desktop/实习/projects/QueryStep/web"
+QUERYSTEP_API_PROXY=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
+```
+
+打开 `http://127.0.0.1:5174` 手动测试。自动验收在项目根目录运行（需要已安装本地 Playwright/Chromium）：
+
+```bash
+export NODE_PATH="$PWD/artifacts/browser-tools/node_modules"
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/artifacts/browser-tools/browsers"
+QUERYSTEP_TEST_WEB_URL=http://127.0.0.1:5174 node tests/browser_workbench.cjs
+QUERYSTEP_TEST_WEB_URL=http://127.0.0.1:5174 QUERYSTEP_WORKBENCH_ISOLATED_DB=1 node tests/browser_workbench.cjs --real
+```
+
+默认测试完全模拟 API；`--real` 会创建合成学习会话并调用已配置模型，不能指向真实学习数据库。
+
+如需同时验证新版课程索引，将 `QUERYSTEP_TEST_EXPECT_COURSE_CORPUS` 设为索引清单中的 `corpus_sha256`，再执行 `--real` 命令。测试会向实验教练询问空表和全 `NULL` 时的 `SUM` 行为，检查命中对应课程卡片，并在刷新后从执行轨迹核对索引版本。
+
+### 8.2 复现 SQL 诊断比较
+
+在项目根目录运行标签审计，不调用模型、不接触学习数据库：
+
+```bash
+artifacts/diagnostics-venv/bin/python -m evals.workbench \
+  --split all --validate-labels --output artifacts/workbench-label-audit.json
+```
+
+100 个冻结案例按任务划分为 60 个开发、40 个测试；每个标签审计四场景和三个种子。案例属于内部作者/编码助手编写，不能称为外部独立基准。
+
+四臂真实模型比较会产生提供方调用与费用。先按第 6.2 节配置本地嵌入模型，并将含新版课程的索引生成到 `artifacts/workbench-knowledge.sqlite3`，再运行：
+
+```bash
+set -a; source ./.env; set +a
+export QUERYSTEP_EMBEDDING_MODEL="$PWD/../examples/居丽叶简历项目7：医疗助手/medix-agent-swarm/.venv/models/bge-small-zh-v1.5"
+QUERYSTEP_LLM_MODEL=gemini-3-flash artifacts/diagnostics-venv/bin/python -m evals.workbench \
+  --split test --concurrency 2 --synthetic-snapshot novice-v1 \
+  --index artifacts/workbench-knowledge.sqlite3 \
+  --embedding-model "$QUERYSTEP_EMBEDDING_MODEL" \
+  --output artifacts/workbench-test-local.json
+```
+
+未配置索引时可省略两个索引参数，使用词项课程检索，但这不是同一检索配置。所有报告拒绝覆盖已有文件，重跑请使用新文件名。原始输出只保存在本地；报告记录源码与案例哈希、用量缺失、降级原因和证据验证。合成上下文不是真实 EpiKT 效果实验，未知费用不是零；四臂调用预算不同，不能称为等成本比较。
+
+### 8.3 尚待执行的人工验收
+
+以下是验收方法，不是已完成的试用结果：
+
+1. 请未参与编写的 SQL 教师或熟悉 SQL 的审核者，独立核对 10 个任务的要求、数据约束、参考查询和 100 个冻结标签，记录不同意见。参考定义位于 `course_content/sql_tasks.py`，标签位于 `evals/workbench_cases.py`；不能只依据程序输出确认程序自己的规则。
+2. 四臂命令可加 `--annotation-output artifacts/workbench-human-review.json` 生成未填写的人审文件。将它与含 arm/答案映射的原报告分开，审核者填写 `manual_review` 中的判断恰当性、提示帮助性、证据支持性及说明。输出结构仍可能暴露实验臂，因此不是严格双盲；未填写字段必须保持 null，不能默认通过。
+3. 征得参与者同意后，使用第 8.1 节的独立数据库进行小规模试用。明确告知 SQL 和提问可能发送给已配置模型，不输入个人信息或生产数据库内容，不收集不必要身份信息。
+4. 让参与者自行完成“保留零订单客户”“筛选已付款的连接”“空表求和”三个不同任务，观察能否找到入口、运行、理解反例、自主修正及刷新恢复。记录卡住的位置、误导提示、调用失败、独立完成情况，而不是由演示者代答。
+5. 随后换一个未演示的同类任务，先不提供提示，记录首次独立尝试与理由。只把结果用于发现体验问题和提出教学假设；少量试用不能推出显著学习增益。
+
+完成后再将实际人数、日期、审核分歧和发现的问题写入审计报告；当前不具备这些记录。

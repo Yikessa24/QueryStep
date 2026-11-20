@@ -22,6 +22,7 @@ DENSE_MIN = 0.47
 SQL_TOKENS = {"count(*)": "sqlcountstar", "count(column)": "sqlcountcolumn", "count(列)": "sqlcountcolumn",
               ">=": "sqlgte", "<=": "sqllte", ">": "sqlgt", "<": "sqllt", "is null": "sqlisnull"}
 OUT_OF_SCOPE = re.compile(r"\b(?:json_table|create\s+index|mysql|sql\s+server)\b|并行索引")
+EXPLICIT_SQL_OPERATORS = re.compile(r"\b(?:sum|coalesce|order\s+by|limit)\b")
 SEGMENTS = re.compile(r"[a-z_][a-z_0-9]*|\d+|[\u3400-\u9fff]+")
 HAN = re.compile(r"[\u3400-\u9fff]+")
 
@@ -119,6 +120,25 @@ def _digest(chunks):
     return sha256(json.dumps(chunks, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def search_lessons(query, topic=None, top_k=3):
+    start = monotonic()
+    chunks = load_lessons()
+    tokens = set(lexical_terms(query))
+    ranked = []
+    if not OUT_OF_SCOPE.search(query.lower()):
+        for key, card in chunks.items():
+            title = set(lexical_terms(card["title"]))
+            keywords = set(lexical_terms(card["keywords"]))
+            if not tokens & (title | keywords):
+                continue
+            score = (2 * len(tokens & title) + 3 * len(tokens & keywords)
+                     + len(tokens & set(lexical_terms(card["text"]))))
+            ranked.append((score, card["topic"] == topic, key))
+    ranked.sort(key=lambda row: (-row[0], -row[1], row[2]))
+    return {"cards": [chunks[key] for _, _, key in ranked[:top_k]], "mode": "reviewed_cards",
+            "corpus": _digest(chunks), "elapsed_ms": round((monotonic() - start) * 1000, 3)}
+
+
 def build(output, embedder, *, directory=SOURCE):
     chunks = load_lessons(directory)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -205,7 +225,16 @@ class KnowledgeIndex:
             for rank, key in enumerate(ranking, 1):
                 if key in eligible:
                     scores[key] = scores.get(key, 0) + 1 / (60 + rank)
-        ranked = sorted(scores, key=lambda key: (-(scores[key] + 0.0006 * (self.cards[key]["topic"] == topic)), key))
+        operators = set(EXPLICIT_SQL_OPERATORS.findall(query.lower())) if actual != "vector" else set()
+
+        def rank_key(key):
+            card = self.cards[key]
+            # Keep named SQL operators ahead of cards matching only incidental words such as NULL.
+            named = (set(EXPLICIT_SQL_OPERATORS.findall(f"{card['title']} {card['keywords']}".lower()))
+                     if operators else set())
+            return -len(operators & named), -(scores[key] + 0.0006 * (card["topic"] == topic)), key
+
+        ranked = sorted(scores, key=rank_key)
         return {"cards": [self.cards[key] for key in ranked[:top_k]], "mode": actual,
                 "corpus": self.manifest["corpus_sha256"], "elapsed_ms": round((monotonic() - start) * 1000, 3)}
 
