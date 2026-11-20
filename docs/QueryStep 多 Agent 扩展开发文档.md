@@ -358,7 +358,7 @@ QUERYSTEP_DIAGNOSTICS_ENABLED=1 ./start.sh
 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
 ```
 
-打开 [本机练习](http://127.0.0.1:5173/)，按当前体验手册走完学生流程。关闭前后端用终端的 `Ctrl+C`。演示步骤及超时后的可用操作见 [体验手册第 3 节](QueryStep%20本地启动与体验手册.md#3-从错题到下一题)。
+打开 [本机练习](http://127.0.0.1:5173/)，按当前体验手册走完学生流程。关闭前后端用终端的 `Ctrl+C`。演示步骤见 [体验手册第 2 节](QueryStep%20本地启动与体验手册.md#2-正式练习)，超时后的操作见 [第 4 节](QueryStep%20本地启动与体验手册.md#4-页面或按钮和手册对不上)。
 
 ```bash
 python -m pytest -q
