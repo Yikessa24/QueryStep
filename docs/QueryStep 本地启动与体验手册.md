@@ -1,6 +1,6 @@
 # QueryStep 本地启动与体验手册
 
-在这台 Mac 上，按第 1～3 节可以走完一次「做题 → EpiKT 选题 → 错题诊断 → 迁移练习 → 下次辅导」。跨考点检索见第 4 节；新版 **SQL 实作与动态实验教练**见第 8 节，不必先做完正式题。
+在这台 Mac 上，按第 1～3 节可以走完一次「做题 → EpiKT 选题 → 错题诊断 → 迁移练习 → 下次辅导」。跨考点检索见第 4 节。想直接体验新版 **SQL 实作与实验教练**，从第 8.1 节开始，按顺序完成 SQL 验证和课程检索两段练习。
 
 平时在原来的浏览器窗口练习，网页会恢复进度，按自己的判断作答。下面的固定选项用于复现特定题目和错题反馈。希望从第一题演示并保留原进度时，再另开无痕窗口。
 
@@ -160,7 +160,7 @@ artifacts/diagnostics-venv/bin/python -m course_content.knowledge_index \
 QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
 ```
 
-如果本地 `.env` 已经写了两个索引变量，启动时以 `.env` 读入的值为准。将其中的 `QUERYSTEP_KNOWLEDGE_INDEX` 指向上面生成的文件，再启动。索引缺失时教练回退到审核卡片或课程关键词检索，模型和索引不匹配时使用关键词检索。
+如果本地 `.env` 定义了 `QUERYSTEP_KNOWLEDGE_INDEX` 或 `QUERYSTEP_EMBEDDING_MODEL`，启动时以 `.env` 中的值为准。将这两项分别指向上面生成的索引文件和用于构建索引的模型目录，再重启。索引缺失时教练回退到审核卡片，模型和索引不匹配时使用关键词检索。
 
 ## 7. 单独确认 Gemini 服务
 
@@ -176,52 +176,99 @@ artifacts/diagnostics-venv/bin/python -m tutor.check_provider
 
 查看探针是否返回模型与检查结果。遇到 `ReadTimeout` 时可以先用网页的快速诊断和迁移练习，模型联通后再试辅导。跨考点检索实现、评估和补查的实测范围见开发方案。 [自主错题教练与课程知识库开发方案](QueryStep%20自主错题教练与课程知识库开发方案.md)
 
-## 8. SQL 实作与动态实验教练
+## 8. 新版工作台体验
 
-更新代码后，先在原启动终端按 `Ctrl+C`，再按第 1 节启动，避免旧进程继续运行旧后端。环境需包含 `api` 和 `diagnostics` 扩展；缺少时运行 `artifacts/diagnostics-venv/bin/python -m pip install -e '.[api,diagnostics]'`。新版课程新增 SUM 与排序规则，已有向量索引按第 6.2 节重建；未配置索引时仍可检索全部审核课程的关键词。
+### 8.1 启动并进入 SQL 实作
 
-1. 点击「SQL 实作」（手机在顶部切换）。无需先提交正式题；原练习进度和未发送的辅导输入不会被清空。
-2. 在任务选择框选择「保留零订单客户的计数」。先看需求、表结构与样例数据，然后在「你的 SQL」输入：
+1. 如果本地服务已是新版，直接刷新 [QueryStep](http://127.0.0.1:5173/)，跳到第 3 步。刚更新代码时，回到旧启动终端按 `Ctrl+C`。找不到旧启动终端时，按第 6 节使用备用端口。
+2. 打开 Mac 的「终端」，在项目目录运行下面两行。等看到「QueryStep 已启动」，保持终端打开。
 
-```sql
-SELECT c.customer_id, COUNT(*) AS order_count
-FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id
-GROUP BY c.customer_id
-```
+   ```bash
+   cd "$HOME/Desktop/实习/projects/QueryStep"
+   QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
+   ```
 
-3. 点击「运行 SQL」：样例可以执行，不能据此判定正确。点击「提交验证」：展开反例，找出预期为 0、实际为 1 的客户，并对照输入表中的未匹配记录。
-4. 在固定右侧「实验教练」提问：**“样本看起来正常，请检查没有订单的客户和重复订单的边界，用实际结果给我提示，不要直接给答案。”** 教练动态选择检查、检索或执行工具；展开「执行轨迹」「查看实验依据」「运行指标」查看真实调用。模型失败时显示降级原因，不能把降级提示当作模型成功。
-5. 自己修改计数对象为右表订单主键，再次「提交验证」。应通过 4 组有限场景；页面仍明确提示这不是所有数据上的 SQL 等价性证明。
-6. 刷新页面验证草稿保存；切换其他任务再返回，编辑内容应保留。另一标签页更新同一草稿会提示冲突，不会静默覆盖；可读取远端版本，并保留冲突前本地 SQL 供复制。
-7. 运行过程中可在右侧「最近实验」取消。服务中断后显示「恢复执行」，继续使用已保存证据和累计预算；主动取消不能恢复。任务或已确认学习笔记版本发生变化时，需要重新提交。
+   这台 Mac 会从现有 `.env` 读取 Gemini 和知识库配置。换机器或缺少 Python 环境时先看第 6.1 节。新版索引文件是 `artifacts/workbench-knowledge.sqlite3`，需要创建或切换时按第 6.2 节操作，然后重启服务。
+3. 在普通浏览器窗口打开 [QueryStep](http://127.0.0.1:5173/)。页面恢复以后，点左侧「SQL 实作」。窄屏或手机点顶部「SQL 实作」，再通过底部「练习」和「助教」切换编辑区与实验教练。即使中间仍显示「开始练习」，也可以直接进入 SQL 实作。
+4. 看到「选择实作任务」下拉框和「你的 SQL」输入框，就可以开始。右侧的「实验教练」对应当前实作任务，实作记录单独保存，正式已答题数保持原值。
 
-10 个任务覆盖条件筛选、NULL、去重、分组计数、HAVING、内外连接、求和和排序。只允许受限 SQLite SELECT；写入、外部文件访问、过大的查询或结果会被拒绝。错误提示会保留输入，不会修改正式题答案。
+### 8.2 用 LEFT JOIN 找出计数错误
 
-「学习上下文」展示提交时的首次独立作答、已确认笔记和正式题 EpiKT 预测快照。要观察真实预测，先按第 2 节完成三次独立作答并请求下一题，再到对应主题的实作提问；未作答或没有同主题候选时，应显示无预测而不是编造分数。实作与教练提示均不增加正式已答题数。
+1. 在「选择实作任务」选「保留零订单客户的计数」。展开「表结构与样例数据」，确认有 `customers` 和 `orders` 两张表。
+2. 点击「你的 SQL」，按 `⌘A` 选中原内容，粘贴下面的查询。它按连接后的行数计数，会在边界数据上出错。
 
-### 8.1 隔离验收，不影响原来的学习记录
+   ```sql
+   SELECT c.customer_id, COUNT(*) AS order_count
+   FROM customers AS c
+   LEFT JOIN orders AS o ON c.customer_id = o.customer_id
+   GROUP BY c.customer_id;
+   ```
 
-另开终端，使用新的本地测试数据库，不要复用正式学习数据库；保留原来的 8000/5173 服务。
+3. 点「运行 SQL」。完成后在编辑器下方看「查询结果」，样例上会返回客户和订单数。接着点「提交验证」，等待出现「发现结果差异」。展开「查看反例与结果差异」，对照「你的结果」与「预期结果」，找到同一个 `customer_id` 在前者计为 **1**、后者计为 **0** 的行。上方反例数据中的 `orders` 表可以用来核对该客户是否有订单。
+4. 保持这段 SQL 在编辑器里。在右侧「实验教练」底部的「向实验教练提问」粘贴下面这句话，然后点「请教实验教练」。窄屏先点底部「助教」。发送的是当前编辑器中的 SQL 和这条问题。
+
+   > 为什么没有订单的客户被计为 1？请用 check_student_sql 核对边界并给出提示
+
+5. 等右侧「选定实验」显示「已完成」，先看提示，再展开「查看实验依据」。如果教练调用了 SQL 检查工具，这里会展示它实际执行的验证结果。展开「执行轨迹」，查看是否出现「核对场景与边界」。展开「运行指标」可以核对本次耗时和工具调用次数。
+6. 回到「你的 SQL」，粘贴下面的修正版本，再点「提交验证」。页面应显示「通过当前测试」和「已检查 4 / 4 组数据」。`LEFT JOIN` 仍保留零订单客户，该行的 `o.order_id` 是 `NULL`，`COUNT(o.order_id)` 会跳过这个值。这里的通过范围是工作台执行的四组测试数据。
+
+   ```sql
+   SELECT c.customer_id, COUNT(o.order_id) AS order_count
+   FROM customers AS c
+   LEFT JOIN orders AS o ON c.customer_id = o.customer_id
+   GROUP BY c.customer_id;
+   ```
+
+### 8.3 问 SUM 规则，查看课程检索结果
+
+1. 在「选择实作任务」改选「汇总可空金额」。在「你的 SQL」粘贴下面的查询。可以先点「运行 SQL」看样例结果，再等运行结束后发问。
+
+   ```sql
+   SELECT SUM(amount) AS total FROM line_items;
+   ```
+
+2. 在右侧「向实验教练提问」粘贴下面的内容，点「请教实验教练」。这是一次专门请求查课程依据的提问。
+
+   > 这是概念问题。请先用 search_course 检索 SQLite SUM 在空表和全 NULL 时的规则，引用对应课程依据。
+
+3. 完成后展开「查看实验依据」，在检索卡片中找 **「SUM 保留求和的空值语义」**。卡片说明，当没有任何非 `NULL` 输入时，无论是空表还是全 `NULL`，`SUM` 都返回 `NULL`。如果教练在回答正文里引用了该卡片，正文下方也会显示引用。点击带链接的卡片标题，可在新标签页查看卡片预先关联的 SQLite 官方资料。课程摘录来自项目维护的知识库，Gemini 根据取回的内容组织提示。
+4. 在同一条实验记录里展开「执行轨迹」，找到「检索课程依据」和「记录课程版本」。使用新版混合索引时，会显示 `hybrid · 课程版本 …`。本次交付验证的版本以 `af0601a9eb13` 开头。以后更新课程并重建索引后，版本号会随课程内容变化。`keyword` 表示关键词检索，`reviewed_cards` 表示直接从审核课程卡片匹配。
+5. 如果要确认结果是否保存，刷新网页，再点「SQL 实作」并重选「汇总可空金额」。确认「你的 SQL」恢复了草稿，然后在右侧「最近实验」按时间点对应的「请教实验教练」。重新展开「查看实验依据」和「执行轨迹」，可以看到当时保存的卡片与课程版本。
+
+如果出现「仅保留证据（降级）」，已有实验依据仍可展开。本轮没有「检索课程依据」轨迹或看不到 `SUM` 卡片时，可用第 7 节检查 Gemini，再在同一任务重发第 2 步的问题。若有卡片但检索模式是 `keyword` 或 `reviewed_cards`，按第 6.2 节核对 `.env` 的索引文件与嵌入模型目录，重启后发起新一轮查看。
+
+### 8.4 继续实作和查看历史
+
+- 「最近实验」按任务展示最近 8 条记录。选中一条可以展开「查看本次 SQL」，或点「恢复此运行 SQL 到编辑器」继续修改。运行中的记录可点「取消执行」。中断的记录可在页面提供「恢复执行」时继续。
+- 编辑区显示「草稿已保存」后，可以换任务或刷新再回来看。若另一标签页正在编辑同一任务，页面可能提示草稿版本冲突。可点「读取远端草稿」比较，再决定使用哪份。
+- 教练记录中的「学习上下文」展示提交当时的近期正式首次独立作答、已确认笔记和可用的 EpiKT 正式题预测。想看到预测，可先按第 2 节做三次独立作答并获取下一题，再到有同主题候选的实作任务提问。首次体验时看到「暂无预测快照」也可以继续运行和验证 SQL。
+
+### 8.5 用独立数据库重复验收
+
+普通体验直接从第 8.1 节开始即可。复现验收时，在另一个终端用新的本地数据库启动，原来的 8000 和 5173 服务可以保持运行。
 
 ```bash
 cd "$HOME/Desktop/实习/projects/QueryStep"
-set -a; source ./.env; set +a
-export QUERYSTEP_DATABASE_URL="sqlite:///$PWD/artifacts/workbench-local-test.sqlite3"
-export QUERYSTEP_DIAGNOSIS_CHECKPOINTS="$PWD/artifacts/workbench-local-test.checkpoints.sqlite3"
+set -a
+source ./.env
+set +a
+wb_test_dir=$(mktemp -d "$PWD/artifacts/workbench-test.XXXXXX")
+export QUERYSTEP_DATABASE_URL="sqlite:///$wb_test_dir/practice.sqlite3"
+export QUERYSTEP_DIAGNOSIS_CHECKPOINTS="$wb_test_dir/checkpoints.sqlite3"
 export QUERYSTEP_EPIKT_RUN="$PWD/artifacts/epikt-dbe-fold0"
 export QUERYSTEP_CATALOG="$PWD/artifacts/dbe-sql-approved.json"
 export QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_COACH_ENABLED=1
 artifacts/diagnostics-venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8001
 ```
 
-再开终端：
+等后端显示启动完成，另开一个终端启动前端。
 
 ```bash
 cd "$HOME/Desktop/实习/projects/QueryStep/web"
 QUERYSTEP_API_PROXY=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
 ```
 
-打开 `http://127.0.0.1:5174` 手动测试。自动验收在项目根目录运行（需要已安装本地 Playwright/Chromium）：
+打开 [验收工作台](http://127.0.0.1:5174/)，按第 8.2～8.3 节操作。也可以另开终端，在项目根目录运行浏览器验收。需已安装本地 Playwright 和 Chromium。
 
 ```bash
 export NODE_PATH="$PWD/artifacts/browser-tools/node_modules"
@@ -232,9 +279,13 @@ QUERYSTEP_TEST_WEB_URL=http://127.0.0.1:5174 QUERYSTEP_WORKBENCH_ISOLATED_DB=1 n
 
 默认测试完全模拟 API；`--real` 会创建合成学习会话并调用已配置模型，不能指向真实学习数据库。
 
-如需同时验证新版课程索引，将 `QUERYSTEP_TEST_EXPECT_COURSE_CORPUS` 设为索引清单中的 `corpus_sha256`，再执行 `--real` 命令。测试会向实验教练询问空表和全 `NULL` 时的 `SUM` 行为，检查命中对应课程卡片，并在刷新后从执行轨迹核对索引版本。
+如需同时验证新版课程索引，在执行 `--real` 命令前，先运行下面这行读取索引版本。如果本机索引配置在其他路径，替换命令中的文件名。测试会检查 `SUM` 卡片及刷新后显示的版本。
 
-### 8.2 复现 SQL 诊断比较
+```bash
+export QUERYSTEP_TEST_EXPECT_COURSE_CORPUS="$(sqlite3 -readonly artifacts/workbench-knowledge.sqlite3 "SELECT json_extract(data, '$.corpus_sha256') FROM manifest;")"
+```
+
+### 8.6 复现 SQL 诊断比较
 
 在项目根目录运行标签审计，不调用模型、不接触学习数据库：
 
@@ -259,13 +310,13 @@ QUERYSTEP_LLM_MODEL=gemini-3-flash artifacts/diagnostics-venv/bin/python -m eval
 
 未配置索引时可省略两个索引参数，使用词项课程检索，但这不是同一检索配置。所有报告拒绝覆盖已有文件，重跑请使用新文件名。原始输出只保存在本地；报告记录源码与案例哈希、用量缺失、降级原因和证据验证。合成上下文不是真实 EpiKT 效果实验，未知费用不是零；四臂调用预算不同，不能称为等成本比较。
 
-### 8.3 尚待执行的人工验收
+### 8.7 尚待执行的人工验收
 
 以下是验收方法，不是已完成的试用结果：
 
 1. 请未参与编写的 SQL 教师或熟悉 SQL 的审核者，独立核对 10 个任务的要求、数据约束、参考查询和 100 个冻结标签，记录不同意见。参考定义位于 `course_content/sql_tasks.py`，标签位于 `evals/workbench_cases.py`；不能只依据程序输出确认程序自己的规则。
 2. 四臂命令可加 `--annotation-output artifacts/workbench-human-review.json` 生成未填写的人审文件。将它与含 arm/答案映射的原报告分开，审核者填写 `manual_review` 中的判断恰当性、提示帮助性、证据支持性及说明。输出结构仍可能暴露实验臂，因此不是严格双盲；未填写字段必须保持 null，不能默认通过。
-3. 征得参与者同意后，使用第 8.1 节的独立数据库进行小规模试用。明确告知 SQL 和提问可能发送给已配置模型，不输入个人信息或生产数据库内容，不收集不必要身份信息。
+3. 征得参与者同意后，使用第 8.5 节的独立数据库进行小规模试用。明确告知 SQL 和提问可能发送给已配置模型，不输入个人信息或生产数据库内容，不收集不必要身份信息。
 4. 让参与者自行完成“保留零订单客户”“筛选已付款的连接”“空表求和”三个不同任务，观察能否找到入口、运行、理解反例、自主修正及刷新恢复。记录卡住的位置、误导提示、调用失败、独立完成情况，而不是由演示者代答。
 5. 随后换一个未演示的同类任务，先不提供提示，记录首次独立尝试与理由。只把结果用于发现体验问题和提出教学假设；少量试用不能推出显著学习增益。
 
