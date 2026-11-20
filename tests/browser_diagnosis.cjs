@@ -2,18 +2,29 @@ const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
 const question = "为什么分组后还要检查 HAVING？请用严格大于 1 的示例。";
+const viewport = { width: 1440, height: 1000 };
+
+async function openDiagnosis(page) {
+  const disclosure = page.locator("details.lab-disclosure");
+  await disclosure.waitFor();
+  if (await disclosure.getAttribute("open") === null) {
+    await disclosure.locator("summary").first().click();
+  }
+  await page.getByRole("region", { name: "SQL 错题诊断", exact: true }).waitFor();
+}
 
 async function openWrongAnswer(page, url) {
   await page.goto(url);
   await page.getByRole("button", { name: "开始练习" }).click();
   for (const [index, option] of [1, 0, 0, 0].entries()) {
     await page.getByRole("button", { name: "提交答案" }).waitFor();
-    await page.getByText(index === 3 ? "EpiKT 推荐" : "规则推荐", { exact: true }).waitFor();
+    await page.getByText(index === 3 ? "EpiKT 推荐" : "起步练习", { exact: true }).waitFor();
     await page.getByRole("radio").nth(option).check();
     await page.getByRole("button", { name: "提交答案" }).click();
     await page.getByRole("button", { name: "下一题" }).waitFor();
     if (index < 3) await page.getByRole("button", { name: "下一题" }).click();
   }
+  await openDiagnosis(page);
   await page.getByRole("textbox", { name: "你的判断" }).waitFor();
 }
 
@@ -33,7 +44,9 @@ async function submitTransfer(page, answer, expectedTables) {
   await tables.nth(expectedTables - 1).waitFor();
   assert.equal(await tables.count(), expectedTables);
   const expected = await answer(tables);
-  await transfer.getByRole("radio", { name: expected, exact: true }).check();
+  await transfer.locator("label.option").filter({
+    has: page.getByText(expected, { exact: true }),
+  }).getByRole("radio").check();
   await transfer.getByRole("button", { name: "提交迁移题" }).click();
   await transfer.getByRole("status").getByText(/^答对了。/).waitFor();
   await transfer.getByRole("table", { name: "SQLite 查询结果" }).waitFor();
@@ -41,7 +54,7 @@ async function submitTransfer(page, answer, expectedTables) {
 }
 
 async function verifyJoinTransfer(browser, url) {
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport });
   try {
     await page.goto(url);
     await page.getByRole("button", { name: "开始练习" }).click();
@@ -77,7 +90,7 @@ async function benchmark(browser, url) {
   const concurrency = Number(process.env.QUERYSTEP_TEST_CONCURRENCY || 1);
   const values = [];
   for (let batch = 0; batch < samples; batch += concurrency) {
-    const pages = await Promise.all(Array.from({ length: Math.min(concurrency, samples - batch) }, () => browser.newPage()));
+    const pages = await Promise.all(Array.from({ length: Math.min(concurrency, samples - batch) }, () => browser.newPage({ viewport })));
     try {
       for (const page of pages) {
         await openWrongAnswer(page, url);
@@ -100,13 +113,13 @@ async function benchmark(browser, url) {
 
 async function main() {
   const url = process.env.QUERYSTEP_TEST_WEB_URL || "http://127.0.0.1:5173";
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ headless: true });
   try {
     if (process.env.QUERYSTEP_TEST_BENCHMARK_SAMPLES) {
       await benchmark(browser, url);
       return;
     }
-    const page = await browser.newPage();
+    const page = await browser.newPage({ viewport });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const health = await (await page.request.get(`${url}/healthz`)).json();
@@ -150,17 +163,25 @@ async function main() {
       assert.deepEqual(explained.result.comparison, run.result.comparison);
       console.log(`Browser: Gemini explanation ready in ${explained.result.explanation.elapsed_ms} ms after SQL evidence.`);
     }
+    await page.getByRole("region", { name: "SQL 错题诊断", exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: require("node:path").join(__dirname, "../artifacts/ui-diagnosis.png") });
     await page.reload();
+    await openDiagnosis(page);
     await page.getByText("诊断完成，学习记录待确认。", { exact: true }).waitFor();
     await page.getByRole("button", { name: "比较结果" }).click();
     await page.getByText("两次查询未移除任何结果键。", { exact: true }).waitFor();
     const transfer = await submitTransfer(page, async () => "2 行", 1);
     await page.reload();
     await transfer.getByRole("status").getByText(/^答对了。/).waitFor();
+    await openDiagnosis(page);
     await page.getByRole("button", { name: "确认保存" }).click();
     await page.getByText("学习记录已保存。", { exact: true }).waitFor();
-    await page.getByText("已确认的学习记录", { exact: true }).click();
-    await page.getByText("复习 GROUP BY 得到分组后，怎样用 HAVING 筛选各组。", { exact: true }).waitFor();
+    await page.locator("button.nav-item").filter({ hasText: "学习记录" }).click();
+    const records = page.getByRole("dialog", { name: "学习记录", exact: true });
+    await records.locator("summary").filter({ hasText: "已确认的学习记录" }).click();
+    await records.getByText("复习 GROUP BY 得到分组后，怎样用 HAVING 筛选各组。", { exact: true }).waitFor();
+    await records.getByRole("button", { name: "关闭", exact: true }).click();
+    await records.waitFor({ state: "hidden" });
     const progress = await (await page.request.get(`${url}/api/practice/progress`)).json();
     assert.equal(progress.total, 4);
     await page.getByRole("button", { name: "下一题" }).click();
@@ -168,6 +189,7 @@ async function main() {
     await page.getByRole("radio").first().check();
     await page.getByRole("button", { name: "上一题" }).click();
     await page.getByText("正在回看第 4 题").waitFor();
+    await openDiagnosis(page);
     await page.getByText("被筛除的分组：D", { exact: true }).waitFor();
     await transfer.getByRole("status").getByText(/^答对了。/).waitFor();
     assert.equal(await page.getByRole("button", { name: "提交答案" }).count(), 0);
@@ -178,13 +200,19 @@ async function main() {
     await page.getByRole("button", { name: "返回当前进度" }).click();
     assert.equal(await page.getByRole("radio").first().isChecked(), true);
     await page.getByRole("button", { name: "提交答案" }).click();
+    const tutor = page.getByRole("region", { name: "课程辅导" });
     let reply;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const recalled = page.waitForResponse((response) => response.request().method() === "POST" &&
-        response.url().endsWith("/tutor"), { timeout: 45000 });
-      await page.getByRole("textbox", { name: "你的问题" }).fill("请调用 retrieve_course_notes，再给一句简短的 GROUP BY 提示。");
-      await page.getByRole("button", { name: "发送" }).click();
-      reply = await (await recalled).json();
+      await tutor.getByRole("textbox", { name: "你的问题" }).fill("请调用 retrieve_course_notes，再给一句简短的 GROUP BY 提示。");
+      const [recalled] = await Promise.all([
+        page.waitForResponse((response) => response.request().method() === "POST" &&
+          response.url().endsWith("/tutor"), { timeout: 45000 }),
+        tutor.getByRole("button", { name: "发送", exact: true }).click(),
+      ]);
+      reply = await recalled.json();
+      await tutor.locator(".chat-turn").nth(attempt).getByText(
+        reply.source === "llm" ? "LLM 助教" : "课程提示", { exact: true },
+      ).waitFor();
       if (reply.source === "llm" || reply.fallback_reason !== "llm_timeout" || !health.tutor_ready) break;
       if (attempt === 0) console.log("Browser: next-item tutor timed out; retrying once.");
     }

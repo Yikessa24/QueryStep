@@ -2,9 +2,10 @@ const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
 const url = process.env.QUERYSTEP_TEST_WEB_URL || "http://127.0.0.1:5173";
+const viewport = { width: 1440, height: 1000 };
 
 async function verify(browser, answers, itemId, ruleId, question) {
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
@@ -21,25 +22,29 @@ async function verify(browser, answers, itemId, ruleId, question) {
     }
     await page.getByRole("button", { name: "查看选题记录" }).click();
     await page.getByText(new RegExp(`本轮实际题号 ${itemId}.*规则对照题号 ${ruleId}`)).waitFor();
+    await page.getByRole("tab", { name: /错题教练/ }).click();
     const panel = page.getByRole("region", { name: "自主错题教练" });
     await panel.getByRole("button", { name: "带我弄懂这题" }).click();
-    await panel.getByRole("textbox").fill(question);
+    await panel.getByRole("textbox", { name: "错题教练：你的疑问" }).fill(question);
     const submit = page.waitForResponse((response) => response.request().method() === "POST" &&
       response.url().endsWith("/coach"));
     await panel.getByRole("button", { name: "请教错题教练" }).click();
     const submitted = await submit;
     assert.equal(submitted.status(), 202);
     const resultPath = submitted.url();
+    const citation = panel.getByRole("link", { name: "依据 1", exact: true });
+    await citation.waitFor();
+    // Completed runs collapse their observations; a citation reveals the evidence.
+    await citation.click();
     await panel.getByText("两次查询结果相同。", { exact: false }).first().waitFor();
     await panel.getByText("两次查询结果不同。", { exact: false }).first().waitFor();
-    await panel.getByRole("link", { name: "依据 1" }).waitFor();
     const saved = (await (await page.request.get(resultPath)).json()).runs.at(-1);
     assert.equal(saved.status, "complete");
     assert.equal(saved.result.status, "hint");
     assert.ok(saved.result.trace.some((step) => step.retrieval === "hybrid"));
     assert.deepEqual(saved.result.trace.filter((step) => "same" in step).map((step) => step.same), [true, false]);
     assert.equal((await (await page.request.get(`${url}/api/practice/progress`)).json()).total, answers.length);
-    const other = await browser.newPage();
+    const other = await browser.newPage({ viewport });
     try {
       await other.request.post(`${url}/api/session`);
       assert.equal((await other.request.get(resultPath)).status(), 404);
@@ -47,7 +52,14 @@ async function verify(browser, answers, itemId, ruleId, question) {
       await other.close();
     }
     await page.reload();
-    await panel.getByRole("link", { name: "依据 1" }).waitFor();
+    await page.getByRole("tab", { name: /错题教练/ }).click();
+    await citation.waitFor();
+    await citation.click();
+    await panel.getByText("两次查询结果相同。", { exact: false }).first().waitFor();
+    await panel.getByText("两次查询结果不同。", { exact: false }).first().waitFor();
+    assert.equal(await page.evaluate(() => window.scrollY), 0, "Evidence navigation must not scroll the app shell");
+    assert.equal((await page.locator(".topbar").boundingBox()).y, 0);
+    await page.screenshot({ path: require("node:path").join(__dirname, `../artifacts/ui-coach-${itemId}.png`) });
     assert.deepEqual(errors, []);
     console.log(`Browser ${itemId} vs rule ${ruleId}: hybrid retrieval, same→different, refresh, isolation.`);
   } finally {
@@ -56,7 +68,7 @@ async function verify(browser, answers, itemId, ruleId, question) {
 }
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ headless: true });
   try {
     await verify(browser, [0, 1, 0, 2, 0, 0], 81, 70,
       "查询课程规则，验证把右表状态条件从 ON 移到 WHERE 为什么可能少一行。");

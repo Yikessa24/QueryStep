@@ -56,13 +56,16 @@ export default function TransferExercise({ decisionId, request, readOnly }:
   if (state?.available === false || (!state && !error) || (readOnly && !state?.feedback)) return null;
   const item = state?.exercise;
   const feedback = state?.feedback;
-  return <section className="diagnosis" aria-label="迁移练习">
-    <h3>迁移练习</h3>
+  return <section className="transfer-exercise" aria-label="迁移练习">
+    <div className={item ? "extension-heading" : "transfer-intro"}>
+      <div className="extension-heading"><div><span className="extension-icon" aria-hidden="true">↗</span><div><h3>迁移练习</h3><p>同一个考点，换一组数据，检验是否真的理解。</p></div></div></div>
+      {!item && <button type="button" className="secondary" disabled={busy || readOnly} onClick={() => void perform(path, {})}>
+        {busy ? "正在生成练习…" : "换一组数据练练"}
+      </button>}
+    </div>
     {error && <p className="error" role="alert">{error}</p>}
-    {!item ? <button type="button" className="secondary" disabled={busy} onClick={() => void perform(path, {})}>
-      {busy ? "正在生成练习…" : "换一组数据练练"}
-    </button> : <>
-      {!feedback && <p>先独立判断，再提交查看解析。</p>}
+    {item && <div className="transfer-body">
+      {!feedback && <p>先独立判断，再提交查看解析。这次练习不改变原题记录。</p>}
       <p>{item.context}</p>
       <div className="diagnosis-results">
         {item.tables.map((table) => <ExerciseTable key={table.name} {...table} />)}
@@ -71,19 +74,22 @@ export default function TransferExercise({ decisionId, request, readOnly }:
       <form onSubmit={submit}>
         <fieldset disabled={readOnly || busy || !!feedback}>
           <legend>选择查询结果</legend>
-          {item.options.map((option, index) => <label className="option" key={option}>
-            <input type="radio" name={`transfer-${item.id}`} checked={(feedback?.selected_option ?? choice) === index}
-              onChange={() => setChoice(index)} />{option}
-          </label>)}
+          {item.options.map((option, index) => {
+            const selected = (feedback?.selected_option ?? choice) === index;
+            return <label className={`option${selected ? " selected" : ""}${selected && feedback ? feedback.correct ? " correct" : " incorrect" : ""}`} key={option}>
+              <input type="radio" name={`transfer-${item.id}`} checked={selected} onChange={() => setChoice(index)} />
+              <span className="letter">{String.fromCharCode(65 + index)}</span><span className="option-text">{option}</span><span className="radio-indicator" />
+            </label>;
+          })}
         </fieldset>
         {!feedback && <button type="submit" disabled={busy || choice === null}>提交迁移题</button>}
       </form>
-      {feedback && <p className="feedback" role="status">
+      {feedback && <p className={`feedback${feedback.correct ? "" : " incorrect"}`} role="status">
         {feedback.correct ? "答对了。" : `正确结果是${item.options[feedback.correct_option]}。`}{feedback.text}
       </p>}
       {feedback?.result_columns && feedback.result_rows && <div className="diagnosis-results">
         <ExerciseTable name="SQLite 查询结果" columns={feedback.result_columns} rows={feedback.result_rows} />
       </div>}
-    </>}
+    </div>}
   </section>;
 }

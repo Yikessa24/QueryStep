@@ -32,8 +32,8 @@ function ExperimentResults({ evidence, join }: { evidence: Evidence; join: boole
     : evidence.observations;
   return <>
     <div className="diagnosis-results">
-      {observations.map((result, index) => result && <div key={result.observation_id}>
-        <h3>{comparison ? (index === 0 ? (join ? "条件在 ON" : "分组结果") : (join ? "条件在 WHERE" : "筛选结果")) : "实验结果"} · {result.row_count} 行</h3>
+      {observations.map((result, index) => result && <div className="transfer-table tool-step" key={result.observation_id}>
+        <h3 className="section-heading">{comparison ? (index === 0 ? (join ? "条件在 ON" : "分组结果") : (join ? "条件在 WHERE" : "筛选结果")) : "实验结果"} · {result.row_count} 行</h3>
         <pre>{result.sql}{Object.keys(result.parameters).length > 0 && `\n参数 ${JSON.stringify(result.parameters)}`}</pre>
         {result.rows.length === 0 ? <p>查询未返回结果。</p> : <table>
           <thead><tr>{result.columns.map((column) => <th scope="col" key={column}>{column}</th>)}</tr></thead>
@@ -55,8 +55,12 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved, rea
   const [topic, setTopic] = useState("aggregate");
   const [run, setRun] = useState<Run | null>(null);
   const [message, setMessage] = useState("");
-  const [sending, setSending] = useState(false);
+  const [busyAction, setBusyAction] = useState<"start" | "experiment" | "confirmation" | "cancel" | null>(null);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [updated, setUpdated] = useState(0);
+  const sending = busyAction !== null;
   const [operator, setOperator] = useState("having_gte");
   const [threshold, setThreshold] = useState("1");
   const [experiment, setExperiment] = useState<Evidence | null>(null);
@@ -81,15 +85,23 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved, rea
 
   useEffect(() => {
     let active = true;
+    setLoading(true);
+    setLoadError("");
     request<{ available: boolean; topic?: string; run: Run | null }>(`/api/practice/${decisionId}/diagnosis`).then((data) => {
       if (active) {
         setAvailable(data.available);
         if (data.topic) setTopic(data.topic);
         setRun(data.run);
+        setLoading(false);
       }
-    }).catch(() => undefined);
+    }).catch(() => {
+      if (active) {
+        setLoading(false);
+        setLoadError("暂时无法加载诊断状态，请重试。已有输入与结果会保留。");
+      }
+    });
     return () => { active = false; };
-  }, [decisionId, request]);
+  }, [decisionId, request, updated]);
 
   useEffect(() => {
     if (!running || !runId) return;
@@ -149,7 +161,8 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved, rea
 
   async function start(event: FormEvent) {
     event.preventDefault();
-    setSending(true);
+    if (readOnly || !available || loading || sending || running || proposal || !message.trim()) return;
+    setBusyAction("start");
     setError("");
     try {
       setRun(await request<Run>(`/api/practice/${decisionId}/diagnosis`, {
@@ -161,13 +174,14 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved, rea
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : "无法启动诊断。");
     } finally {
-      setSending(false);
+      setBusyAction(null);
     }
   }
 
   async function tryExperiment(event: FormEvent) {
     event.preventDefault();
-    setSending(true);
+    if (readOnly || loading || sending || running || !runId) return;
+    setBusyAction("experiment");
     setError("");
     try {
       setExperiment(await request<Evidence>(`/api/diagnosis/${runId}/experiment`, {
@@ -178,13 +192,13 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved, rea
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : "实验未完成。");
     } finally {
-      setSending(false);
+      setBusyAction(null);
     }
   }
 
   async function confirm(action: ConfirmationAction) {
-    if (!proposal) return;
-    setSending(true);
+    if (readOnly || loading || sending || !proposal) return;
+    setBusyAction("confirmation");
     setError("");
     try {
       await request(`/api/diagnosis/${runId}/confirmation`, {
@@ -198,90 +212,134 @@ export default function DiagnosisPanel({ decisionId, request, onMemorySaved, rea
       setError(problem instanceof Error ? problem.message : "无法确认学习记录。");
       try { setRun(await request<Run>(`/api/diagnosis/${runId}`)); } catch { /* Retry keeps the same choice. */ }
     } finally {
-      setSending(false);
+      setBusyAction(null);
     }
   }
 
-  if (!available || (readOnly && !run?.result?.summary)) return null;
+  async function cancel() {
+    if (readOnly || sending || !running || !runId) return;
+    setBusyAction("cancel");
+    setError("");
+    try {
+      setRun(await request<Run>(`/api/diagnosis/${runId}/cancel`, {}));
+    } catch {
+      setError("暂时无法取消诊断，请稍后再次点击「取消诊断」。");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   const result = readOnly || run?.status === "completed" || run?.status === "waiting_confirmation" ? run?.result : null;
+  const showContent = available && (!readOnly || !!run?.result?.summary);
   return <section className="diagnosis" aria-label="SQL 错题诊断">
-    <h2>SQL 错题诊断</h2>
-    <p>用独立的合成数据验证你的判断。</p>
-    {!readOnly && <form className="tutor-form" onSubmit={start}>
-      <input aria-label="你的判断" placeholder={join ? "例如：条件移到 WHERE 后，为什么少了行？" : "例如：为什么分组后还会少一行？"} maxLength={500}
-        value={message} readOnly={sending || running} onChange={(event) => {
-          setMessage(event.target.value);
-          setRequestKey(crypto.randomUUID());
-        }} />
-      <button disabled={sending || running || !!proposal || !message.trim()}>运行诊断</button>
-    </form>}
-    {error && <p className="error" role="alert">{error}</p>}
-    {run && <div role="status">
-      <p>{readOnly ? "已保存的诊断结果" : run.status === "completed" && run.result?.mode === "clarify"
-        ? "请确认实验条件" : statuses[run.status]}</p>
-      {Object.entries(run.branches).map(([branch, status]) =>
-        <span className="citation" key={branch}>{branchTitles[branch]} · {statuses[status === "failed" ? "failed_branch" : status] ?? status}</span>)}
+    <header className="panel-intro">
+      <h2 className="section-heading">SQL 错题诊断</h2>
+      <p className="helper-text">{readOnly ? "查看已保存的诊断结论与实验依据。" : "检索课程依据，用独立的合成数据验证你的判断。"}</p>
+    </header>
+    {loading && <p className="helper-text" role="status">正在加载诊断状态…</p>}
+    {loadError && <div className="error" role="alert">
+      <p>{loadError}</p>
+      <button type="button" className="secondary" disabled={loading} onClick={() => setUpdated((value) => value + 1)}>重试</button>
     </div>}
-    {running && !readOnly && <button type="button" className="secondary" onClick={async () => {
-      try {
-        setRun(await request<Run>(`/api/diagnosis/${runId}/cancel`, {}));
-      } catch {
-        setError("暂时无法取消诊断。");
-      }
-    }}>取消诊断</button>}
-    {result && <>
-      <p>{result.summary}</p>
-      {!!result.memory_ids?.length && <p>本轮诊断读取了此前确认的相关学习记录。</p>}
-      {result.mode !== "full" && result.mode !== "clarify" && <p>本轮仅展示已取得的证据或课程提示。</p>}
-      {result.sources.length > 0 && <><h3>课程依据</h3><ul>{result.sources.map((source) =>
-        <li key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
-          {source.text && <p>{source.text}</p>}</li>)}</ul></>}
-      {result.observations.length > 0 && <ExperimentResults evidence={result} join={join} />}
-      {explanation?.status === "pending" && <p className="tutor-thinking" role="status">
-        <span className="tutor-thinking-dots" aria-hidden="true"><span /><span /><span /></span>
-        Gemini 正在补充讲解…
-      </p>}
-      {explanation?.status === "ready" && <section aria-label="Gemini 补充讲解">
-        <h3>Gemini 补充讲解 · 本轮诊断</h3>
-        <p>{explanation.text}</p>
-        <p>{explanation.question}</p>
-        {result.sources.filter((source) => source.id === explanation.source_id).map((source) =>
-          <a key={source.id} href={source.url} target="_blank" rel="noreferrer">讲解依据 · {source.title}</a>)}
-        {!!explanation.memory_ids?.length && <p>本次讲解参考了你确认过的复习要点。</p>}
-      </section>}
-      {explanation?.status === "fallback" && <p>本轮可根据上方课程依据和 SQL 结果继续练习。</p>}
-      {!readOnly && <form className="diagnosis-controls" onSubmit={tryExperiment}>
-        {!join && <><label>筛选条件 <select value={operator} disabled={sending} onChange={(event) => {
-          setOperator(event.target.value);
-          setExperimentKey(crypto.randomUUID());
+    {!loading && !loadError && !available && <p className="empty-state">本题暂不支持 SQL 实验诊断，可使用普通助教继续提问。</p>}
+    {!loading && !loadError && available && readOnly && !run?.result?.summary && <p className="empty-state">本题没有已保存的诊断记录。</p>}
+    {showContent && <>
+      {!readOnly && <>
+        <form className="tutor-form diagnosis-composer" onSubmit={start} aria-busy={busyAction === "start"}>
+          <input aria-label="你的判断" placeholder={join ? "例如：条件移到 WHERE 后，为什么少了行？" : "例如：为什么分组后还会少一行？"} maxLength={500}
+            value={message} readOnly={loading || sending || running || !!proposal} onChange={(event) => {
+              setMessage(event.target.value);
+              setRequestKey(crypto.randomUUID());
+            }} />
+          <button disabled={loading || sending || running || !!proposal || !message.trim()}>运行诊断</button>
+        </form>
+        {busyAction === "start" && <p className="helper-text" role="status">正在提交你的判断…</p>}
+        {proposal && <p className="helper-text">请先确认或跳过下方学习记录，再开始新诊断。</p>}
+      </>}
+      {error && <div className="error" role="alert">
+        <p>{error}</p>
+        {!running && <p className="helper-text">输入与已取得的证据仍保留，可稍后重试相应操作。</p>}
+      </div>}
+      {run && <div className={`tool-run${run.status === "failed" ? " error" : ""}`} role="status">
+        <p>{readOnly ? "已保存的诊断结果" : run.status === "completed" && run.result?.mode === "clarify"
+          ? "请确认实验条件" : statuses[run.status] ?? run.status}</p>
+        <div className="diagnosis-branches">{Object.entries(run.branches).map(([branch, status]) =>
+          <span className="citation tool-step" key={branch}>{branchTitles[branch] ?? branch} · {statuses[status === "failed" ? "failed_branch" : status] ?? status}</span>)}</div>
+      </div>}
+      {running && !readOnly && <div className="actions">
+        <button type="button" className="secondary" disabled={sending} onClick={() => void cancel()}>取消诊断</button>
+        {busyAction === "cancel" && <span className="helper-text" role="status">正在取消诊断…</span>}
+      </div>}
+      {result && <>
+        <div className="tool-summary">
+          <h3 className="section-heading">诊断结论</h3>
+          <p>{result.summary}</p>
+          {!!result.memory_ids?.length && <p className="helper-text">本轮诊断读取了此前确认的相关学习记录。</p>}
+          {result.mode !== "full" && result.mode !== "clarify" && <p className="helper-text">本轮仅展示已取得的证据或课程提示。</p>}
+        </div>
+        {result.sources.length > 0 && <section className="tool-evidence" aria-label="课程依据">
+          <h3 className="section-heading">课程依据</h3>
+          <ul>{result.sources.map((source) => <li className="tool-step" key={source.id}>
+            <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>
+            {source.text && <p>{source.text}</p>}
+          </li>)}</ul>
+        </section>}
+        {result.observations.length > 0 && <ExperimentResults evidence={result} join={join} />}
+        {explanation?.status === "pending" && <p className="tutor-thinking helper-text" role="status">
+          <span className="tutor-thinking-dots" aria-hidden="true"><span /><span /><span /></span>
+          Gemini 正在补充讲解…
+        </p>}
+        {explanation?.status === "ready" && <section className="tool-summary" aria-label="Gemini 补充讲解">
+          <h3 className="section-heading">Gemini 补充讲解 · 本轮诊断</h3>
+          <p>{explanation.text}</p>
+          <p>{explanation.question}</p>
+          {result.sources.filter((source) => source.id === explanation.source_id).map((source) =>
+            <a key={source.id} href={source.url} target="_blank" rel="noreferrer">讲解依据 · {source.title}</a>)}
+          {!!explanation.memory_ids?.length && <p className="helper-text">本次讲解参考了你确认过的复习要点。</p>}
+        </section>}
+        {explanation?.status === "fallback" && <p className="helper-text">本轮可根据上方课程依据和 SQL 结果继续练习。</p>}
+        {!readOnly && <>
+          <form className="diagnosis-controls" onSubmit={tryExperiment} aria-busy={busyAction === "experiment"}>
+            {!join && <><label>筛选条件 <select value={operator} disabled={loading || sending} onChange={(event) => {
+              setOperator(event.target.value);
+              setExperimentKey(crypto.randomUUID());
+            }}>
+              <option value="having_gt">严格大于</option><option value="having_gte">大于等于</option>
+            </select></label>
+            <label>计数阈值 <input type="number" min={0} max={50} step={1} required value={threshold}
+              disabled={loading || sending} onChange={(event) => {
+                setThreshold(event.target.value);
+                setExperimentKey(crypto.randomUUID());
+              }} /></label></>}
+            <button disabled={loading || sending}>{join ? "把条件移到 WHERE 并比较" : "比较结果"}</button>
+          </form>
+          {busyAction === "experiment" && <p className="helper-text" role="status">正在运行对照查询…</p>}
+        </>}
+        {experiment && <ExperimentResults evidence={experiment} join={join} />}
+        {result.trace && <details className="tool-evidence"><summary>查看诊断轨迹</summary>
+          {Object.entries(result.trace).map(([branch, steps]) => <p className="tool-step" key={branch}>
+            {branchTitles[branch] ?? branch} · {steps.map((step) => step.tool).join(" → ") || "未执行工具"}
+          </p>)}
+        </details>}
+      </>}
+      {!readOnly && proposal && <>
+        <form className="diagnosis-memory" aria-busy={busyAction === "confirmation"} onSubmit={(event) => {
+          event.preventDefault();
+          void confirm(pending?.action ?? (summary.trim() === proposal.summary ? "confirm" : "edit"));
         }}>
-          <option value="having_gt">严格大于</option><option value="having_gte">大于等于</option>
-        </select></label>
-        <label>计数阈值 <input type="number" min={0} max={50} step={1} required value={threshold}
-          disabled={sending} onChange={(event) => {
-            setThreshold(event.target.value);
-            setExperimentKey(crypto.randomUUID());
-          }} /></label></>}
-        <button disabled={sending}>{join ? "把条件移到 WHERE 并比较" : "比较结果"}</button>
-      </form>}
-      {experiment && <ExperimentResults evidence={experiment} join={join} />}
-      {result.trace && <details><summary>查看诊断轨迹</summary>
-        {Object.entries(result.trace).map(([branch, steps]) => <p key={branch}>
-          {branchTitles[branch]} · {steps.map((step) => step.tool).join(" → ") || "未执行工具"}
-        </p>)}
-      </details>}
+          <h3 className="section-heading">保存为学习记录</h3>
+          <p className="helper-text">确认后的复习要点，可供助教在同主题错题中参考。</p>
+          <label>复习要点 <textarea value={summary} rows={3} maxLength={300} required readOnly={!!pending || loading || sending}
+            onChange={(event) => setSummary(event.target.value)} /></label>
+          {pending && <p className="helper-text">上次确认尚未完成；重试会沿用原来的选择。</p>}
+          <div className="actions composer-footer">
+            <button disabled={loading || sending || !summary.trim()}>{pending ? "重试确认" : "确认保存"}</button>
+            {!pending && <button type="button" className="secondary" disabled={loading || sending} onClick={() => void confirm("skip")}>跳过</button>}
+          </div>
+        </form>
+        {busyAction === "confirmation" && <p className="helper-text" role="status">正在确认学习记录…</p>}
+      </>}
+      {confirmationMessage && <p className="helper-text" role="status">{confirmationMessage}</p>}
     </>}
-    {!readOnly && proposal && <form className="diagnosis-memory" onSubmit={(event) => {
-      event.preventDefault();
-      void confirm(pending?.action ?? (summary.trim() === proposal.summary ? "confirm" : "edit"));
-    }}>
-      <h3>保存为学习记录</h3>
-      <p>以后遇到同主题的错题时，助教可以参考你确认的复习要点。</p>
-      <label>复习要点 <textarea value={summary} maxLength={300} required readOnly={!!pending || sending} onChange={(event) =>
-        setSummary(event.target.value)} /></label>
-      <div className="actions"><button disabled={sending || !summary.trim()}>{pending ? "重试确认" : "确认保存"}</button>
-        {!pending && <button type="button" className="secondary" disabled={sending} onClick={() => void confirm("skip")}>跳过</button>}</div>
-    </form>}
-    {confirmationMessage && <p role="status">{confirmationMessage}</p>}
   </section>;
 }
