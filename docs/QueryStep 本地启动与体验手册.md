@@ -1,174 +1,175 @@
 # QueryStep 本地启动与体验手册
 
-适用于包含证据优先诊断、Gemini 补充讲解和 24 道 SQL Core 迁移练习的版本。正式 EpiKT 权重在 Mac CPU 上运行，Gemini 通过本机 `.env` 配置的服务提供辅导。
+在这台 Mac 上，按第 1～3 节可以走完一次「做题 → EpiKT 选题 → 错题诊断 → 迁移练习 → 下次辅导」。想直接体验新版的**跨考点检索**，启动后走第 4 节。
 
-## 1. 启动完整功能
+平时在原来的浏览器窗口练习，网页会恢复进度，按自己的判断作答。下面的固定选项用于复现特定题目和错题反馈。希望从第一题演示并保留原进度时，再另开无痕窗口。
 
-在这台 Mac 上打开终端，整行复制以下命令并回车。
+## 1. 启动网站
+
+**打开 Mac 的「终端」应用**，把下面两行一起复制进去，按回车。
 
 ```bash
-QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$HOME/Desktop/实习/projects/QueryStep/artifacts/diagnostics-venv/bin/python" "$HOME/Desktop/实习/projects/QueryStep/start.sh"
+cd "$HOME/Desktop/实习/projects/QueryStep"
+QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
 ```
 
-命令会激活 Conda 的 `querystep` 环境，核对正式权重和 24 道演示题，读取 `.env`，再启动前后端。`QUERYSTEP_DIAGNOSTICS_ENABLED=1` 会开启 SQL 诊断、迁移练习和学习记录。看到「QueryStep 已启动」和「EpiKT 已加载。Gemini 辅导已配置。」后，打开 [QueryStep 学生端](http://127.0.0.1:5173/)。保持这个终端运行。结束时按 `Ctrl+C`。
+1. 等终端显示「QueryStep 已启动」。保持这个终端打开。
+2. 打开浏览器，访问 [http://127.0.0.1:5173/](http://127.0.0.1:5173/)。
+3. 想继续平时的练习，就在普通窗口打开上面的地址。想从头按手册复现，就在无痕窗口打开同一个地址。
+4. 首页出现「用 SQL 找到你想要的数据」时，点「开始练习」。已有进度的窗口会直接恢复到当前题。
 
-如果已经开着旧实例，先在启动它的终端按 `Ctrl+C`，然后用上面的命令重启。若用新的 Mac 或独立环境不存在，参见第 6 节。
+启动命令会使用本机已配置的 Conda 环境、EpiKT 权重和 `.env`，同时开启诊断与错题教练。运行结束后回到启动终端按 `Ctrl+C`。如果终端提示端口已占用，按第 5 节处理。
 
-## 2. 固定演示路线
+## 2. 做到第 4 题，查看 EpiKT 选题
 
-首次体验用一个新的无痕窗口，点击「开始练习」。以下选项用于复现这台 Mac 上当前权重和题库的固定路径。平时练习可自行作答。
+这一节从点击「开始练习」后的第一题开始。题目上的 A、B 等字母是选项。点击选项后，还要点题目下方的「提交答案」。
 
-| 页面上的第几题 | 演示选项 | 提交后应看到 |
+| 网页进度 | 点哪个选项 | 提交后点什么 |
 |---|---|---|
-| 第 1 题 | **B** | 规则推荐、回答有误 |
-| 第 2 题 | **A** | 规则推荐、回答有误 |
-| 第 3 题 | **A** | 规则推荐、回答正确 |
-| 第 4 题 | **A** | EpiKT 推荐、回答有误 |
+| 第 1 题 | **B** | 「提交答案」→「下一题」 |
+| 第 2 题 | **A** | 「提交答案」→「下一题」 |
+| 第 3 题 | **A** | 「提交答案」→「下一题」 |
+| 第 4 题 | **A** | 「提交答案」，留在反馈页 |
 
-每题点击「提交答案」。前三题提交后点击「下一题」，第 4 题提交后先留在反馈页。点击「查看选题记录」，应看到**本轮实际题号 75，规则对照题号 69**，以及 EpiKT 模型版本。这两个题号来自同一份作答历史。第 75 题是你实际做到的题。
-
-题目上方的「上一题」可以回看已提交的选择、判分和已保存的辅导内容。回看时可以逐题前后翻，也可以点「返回当前进度」直接回到当前题。回看页面只读，正式作答计数和当前未提交的选项会保留。
+第 4 题标题上方应显示「EpiKT 推荐」。提交后看到「回答有误」，滚动到底部，点「查看选题记录」。应看到**本轮实际题号 75，规则对照题号 69**。75 是实际展示的题，69 是使用同一份作答历史按规则计算出的对照题号。
 
 ## 3. 从错题到下一题
 
-以下操作都从第 75 题的错题反馈页开始。
+先留在第 2 节最后的 75 号错题反馈页，按下面的顺序做诊断、迁移练习和复习记录。
 
-1. **运行错题诊断。** 在「SQL 错题诊断」下的「你的判断」输入框粘贴这句，然后点击「运行诊断」。
+### 3.1 运行 HAVING 诊断
+
+1. 向下滚动到「SQL 错题诊断」。在「你的判断」输入框粘贴下面这句。
 
    > 为什么分组后还要检查 HAVING？请用严格大于 1 的示例。
 
-   页面先展示课程依据和实际执行的两条 SQL。原始分组有 **4 组**，`HAVING COUNT(*) > 1` 后剩 **3 组**，D 被筛除。可展开「查看诊断轨迹」确认课程检索、查询执行和结果比较的工具步骤。
+2. 点「运行诊断」。等到「诊断完成，学习记录待确认」或「诊断完成」。
+3. 向下看「课程依据」和两张结果表。原始分组有 **4 组**，`HAVING COUNT(*) > 1` 后剩 **3 组**。页面应显示「被筛除的分组：D」。想看用了哪些工具，可展开「查看诊断轨迹」。
+4. 在同一块找到「筛选条件」，选择「大于等于」。把「计数阈值」设为 **1**，点「比较结果」。新结果应从 **4 组变为 4 组**，并显示「两次查询未移除任何结果键」。
 
-   「课程依据」里的中文说明和链接是提前写好的资料卡。系统按主题和关键词检索，链接指向 PostgreSQL 官方文档。Gemini 补讲可以从当前卡片中选择引用。可直接阅读页面上的中文说明，需要查原文时再点链接。 [PostgreSQL 聚合函数教程](https://www.postgresql.org/docs/18/tutorial-agg.html) · [GROUP BY 和 HAVING](https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-GROUP)
+诊断完成后，页面有时会先显示「Gemini 正在补充讲解…」，随后展示补充解释。可以直接用已经显示的课程依据和 SQL 表继续后面的步骤。
 
-2. **看 Gemini 补充讲解。** 证据出现后，页面可能短暂显示「Gemini 正在补充讲解…」，随后出现「Gemini 补充讲解 · 本轮诊断」，包含一个讲解重点、一个追问和一条依据。网关超时后仍可使用已显示的课程依据和 SQL 结果完成后续步骤。
+### 3.2 换一组数据再做一次
 
-3. **改条件再运行一次。** 将「筛选条件」设为「大于等于」，「计数阈值」设为 **1**，点击「比较结果」。新的对照应显示 **4 组 → 4 组**，页面提示「两次查询未移除任何结果键」。原来的 `> 1` 结果仍可对照。
+1. 向下找到「迁移练习」，点「换一组数据练练」。
+2. 看新表和其中的 `HAVING COUNT(*) >= 2`。按照这条演示路线，选择文字为 **「2 行」**的选项。选项顺序可能变化。
+3. 点「提交迁移题」。应看到「答对了。」以及「SQLite 查询结果」，其中列出保留的两个分组。侧栏的「已作答」仍是 **4**，这次变式结果保存在当前错题下。
+4. 用 `Command + R` 刷新网页，确认迁移练习反馈仍可查看。
 
-4. **做一道迁移练习。** 在错题反馈页点「换一组数据练练」。75 号题的新版变式用一张合成数据表考 `HAVING COUNT(*) >= 2`。按 `category` 分组后，示例中有两组符合条件，选 **2 行**。选项顺序会变化。点「提交迁移题」，查看判分、解释和 SQLite 实际返回的结果。此时左侧「已作答」仍为 **4**，迁移作答单独保存。此前已经打开过旧版迁移题的会话仍会显示原题。
+如果你的原会话已经生成过变式，以页面实际展示的题和数据为准。
 
-5. **刷新并保存复习要点。** 仍留在第 75 题，刷新页面。确认诊断和迁移题反馈仍在，再找到「保存为学习记录」，保留默认复习要点或自行改写，点击「确认保存」。左侧展开「已确认的学习记录」可查看、修改或删除条目。先留着这条记录，便于体验下面的召回。
+### 3.3 保存复习要点，并在下一题追问
 
-   建议写成自己下次想检查的具体步骤，比如「我容易把 `>` 当成 `>=`，下次先看有没有计数恰好等于阈值的组」。确认后，它会成为同主题错题辅导的可选上下文。侧栏随时可回顾，删除后停止后续召回。EpiKT 仍根据正式作答记录决定下一题。
+1. 仍在 75 号错题反馈页，找到「SQL 错题诊断」中的「保存为学习记录」。保留默认「复习要点」，或改成以下内容。
 
-6. **验证下一题的助教能用到记录。** 点击「下一题」，按当前演示历史会进入另一道相关聚合题。选 **A** 并提交，进入错题反馈。在「问问助教」输入下方第一句话并点「发送」。模型正常回复时会标为「LLM 助教」。如果本轮读取了复习记录，回复下方会显示「本轮辅导读取了已确认的学习记录」。
+   > 我容易把 > 当成 >=。下次先找计数恰好等于阈值的组。
+
+2. 点「确认保存」。看到「学习记录已保存。」后，展开左侧「已确认的学习记录」，就能看到这一条。展开后可用「修改」或「删除」管理记录。
+3. 点当前反馈页底部的「下一题」。按这条演示路线，会进入另一道相关聚合题。选择 **A**，点「提交答案」，等到错题反馈出现。
+4. 在「问问助教」中粘贴下方第一句，点「发送」。
 
    > 请调用 retrieve_course_notes，再给一句简短的 GROUP BY 提示。
 
-   想继续体验多轮问答，可以接着发第二句。
+5. 等待「助教正在思考…」结束。看到「LLM 助教」表示本轮返回了模型回复。如果本轮使用了刚保存的记录，回复下面会显示「本轮辅导读取了已确认的学习记录」。看到「审核提示」时，可以直接阅读备用说明。
+6. 想试一次连续追问，就在**同一个输入框**再粘贴下面这句，点「发送」。
 
    > 请用例题工具给一个不同的简短例子，帮我区分 GROUP BY 和 HAVING。
 
-   发出问题后，页面会用「助教正在思考…」提示等待。看到「审核提示」时，本轮使用的是审核过的说明。可以继续练习，或按第 5 节排查 Gemini。
+7. 点页面上方的「上一题」。顶部应显示「正在回看第 4 题」，可以查看之前的判分、诊断和迁移练习。点「返回当前进度」回到第 5 题。
 
-在普通浏览器窗口中保留此站点的 Cookie，关闭页面或重启服务后可以继续。无痕窗口适合单次演示，关闭所有无痕窗口后，下次通常会从新会话开始。页面上的「重新开始」会开启新学习身份。
+## 4. 做到 81 号题，体验跨考点检索
 
-## 4. 可选路线 · 连接条件对照
+如果当前已经是 81 号题的错题反馈页，直接从第 3 步开始。如果第 2～3 节已做过，可以在新的无痕会话里走这条路线。Chrome 的无痕窗口共享同一次会话，想从第一题重新走时，先关闭**全部**无痕窗口，再新开一个。普通窗口的进度可以继续保留。
 
-另开独立的新会话，依次提交 **A、B、A、C、A**，每次提交后点「下一题」。第 6 题应由 EpiKT 推荐 **81 号题**，规则对照是 **70 号题**。选 **A** 提交进入错题反馈，在「你的判断」输入下方问题，再点击「运行诊断」。
+1. 打开 [QueryStep](http://127.0.0.1:5173/)，点「开始练习」。前五题依次选择 **A、B、A、C、A**。每题都点「提交答案」，再点「下一题」。
+2. 到第 6 题选择 **A**，点「提交答案」。看到「回答有误」后留在反馈页。点「查看选题记录」，应看到**实际题号 81，规则对照题号 70**。
+3. 在「自主错题教练」区域点「带我弄懂这题」。在刚出现的输入框粘贴下面这句，再点「请教错题教练」。
 
-> ON 和 WHERE 有什么区别？
+   > LEFT JOIN 右边没有配对订单时，左边的用户行还在吗？COUNT(*) 会不会跳过它？
 
-在合成数据上，付款条件放在 `ON` 时返回 **3 行**，移到 `WHERE` 后只剩 **1 行**，账户 2 和 3 被筛除。可以点「把条件移到 WHERE 并比较」再运行一次。
+4. 等待「正在查找依据或验证结果…」结束。在教练回复中的「课程依据」应能看到两个考点。
 
-在同一页点「换一组数据练练」可做 `LEFT JOIN` 变式，也可以答错后直接打开。数出左表每行在右表的匹配条数。找不到匹配时仍计一行。合计为 **8 或 9 行**，以当前展示的数据表为准。提交后可以在「SQLite 查询结果」中看到哪些左表记录的右侧值为 `NULL`。其余 SQL Core 题同样在答错后提供迁移入口。
+   - **左连接保留未匹配行**。点这一行的「查看依据」，核对为什么左侧记录仍保留，右侧补 `NULL`。
+   - **COUNT(*) 统计所有结果行**。点另一行的「查看依据」，核对为什么右侧补了 `NULL` 的行仍会被计入。
 
-## 5. 排查常见情况
+5. 首轮缺一份依据且触发补查时，页面显示「已补查缺失考点」。补查后仍缺少依据的考点会显示「暂未找到课程依据」。上面这条问题用于体验两条依据齐备，首轮找齐时直接显示两条链接。
+6. 想看教练自己选择实验，在**同一个教练输入框**粘贴下面这句，再点「请教错题教练」。
 
-在另一个终端运行以下命令检查服务。
+   > 查询课程规则，验证把右表状态条件从 ON 移到 WHERE 为什么可能少一行。
+
+7. 看教练展示的 SQL 和结果表。如果第一组数据的结果相同，留意它是否换用「含边界数据的样例」重新比较。要直接核对固定 SQL 实验，可以在页面另一块「SQL 错题诊断」的「你的判断」中输入 `ON 和 WHERE 有什么区别？`，点「运行诊断」。结果应显示条件放在 `ON` 时有 **3 行**，放在 `WHERE` 时剩 **1 行**，账户 2 和 3 被筛除。
+8. 想继续练习，在「迁移练习」点「换一组数据练练」。看两张合成表和查询，对每个左表键数匹配记录。找不到匹配时仍计一行，答案以页面数据为准。选择行数后点「提交迁移题」，查看「SQLite 查询结果」。点「下一题」可以继续正式练习。
+
+## 5. 页面或按钮和手册对不上
+
+另开一个终端，复制以下命令。保持原启动终端运行。
 
 ```bash
 curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-| 现象 | 怎么处理 |
+| 看到的情况 | 下一步 |
 |---|---|
-| 页面打不开，或提示端口已占用 | 查终端有没有打印「QueryStep 已启动」。如有旧服务，请到它的终端停止后重启。备用端口命令见第 6 节。 |
-| 第 4 题没有出现 EpiKT 推荐 | 查看 `epikt_ready`。若为 `false`，检查权重、配套映射和题库。若为 `true`，确认是新会话且前三题为 B、A、A，再看「查看选题记录」里的回退信息。 |
-| 看不到「SQL 错题诊断」 | 查看 `diagnostics_ready` 和 `mcp_ready`，正常都为 `true`。确认启动时加了诊断开关，且当前是第 75 或 81 题的错题反馈页。 |
-| 有 SQL 诊断，Gemini 一直没出现 | `tutor_ready: true` 代表已读入服务配置。实际联通看「LLM 助教」或「Gemini 补充讲解」。普通问答读取 `QUERYSTEP_LLM_MODEL`，补充讲解读取 `QUERYSTEP_EXPLANATION_MODEL`，后者默认 `gemini-3-flash`，设为空会关闭补充讲解。修改 `.env` 后重启后端。 |
-| 页面提示「请确认实验条件」 | 诊断问题的条件不明确。可直接在页面选条件并比较。想继续体验第 3 节的完整路线时，用其中的原句新发起一次诊断。 |
-| 刷新没有恢复原进度 | 确认仍在原浏览器和原地址，且站点 Cookie 保留。若换了本机作答数据库或开始了新学习身份，则会显示对应的另一份进度。 |
+| 网页打不开 | 回原启动终端，确认是否出现「QueryStep 已启动」。使用备用端口时，按启动终端打印的地址打开网页。 |
+| 端口已占用 | 如果已有正常运行的实例，可以直接打开网页。要换到新版，回旧实例的启动终端按 `Ctrl+C`，再运行第 1 节。找不到旧终端时用第 6 节的备用端口。 |
+| 看不到「EpiKT 推荐」 | 检查 `epikt_ready`。若为 `true`，先完成前三题，再在当前题提交后点「查看选题记录」查看回退提示。 |
+| 看不到「运行诊断」或「带我弄懂这题」 | 核对 `diagnostics_ready` 与 `coach_ready` 是否为 `true`。这两个入口支持 75 号与 81 号题的错题反馈页。历史回看可查看已保存结果。 |
+| 第 6 题没有出现 81 号或第 4 题没有出现 75 号 | 用「查看选题记录」确认实际题号。如果沿用过往进度，想复现固定路线时用新的浏览器会话从第一题开始。 |
+| 助教出现「审核提示」或教练超时 | 可以继续查看已有证据、运行快速诊断和做迁移练习。想单独确认 Gemini 服务，运行第 7 节的探针。 |
+| 刷新后进度不同 | 确认浏览器、原来的网址、站点 Cookie 和本机数据库一致。普通窗口与无痕窗口各有自己的进度。 |
 
-## 6. 环境、备用启动与模型排查
+## 6. 用备用端口启动或恢复环境
 
-这台 Mac 的默认作答库为 `artifacts/querystep.sqlite3`。重新布置环境时，准备 Conda、Node.js、项目源码与配套的本地文件。
-
-| 本地文件 | 用途 |
-|---|---|
-| 根目录 `.env` | Gemini 地址、密钥、模型和超时配置 |
-| `artifacts/epikt-dbe-fold0/` | 正式权重、模型配置、ID 映射、校准和验收文件。恢复时整体复制。 |
-| `artifacts/dbe-sql-approved.json` | 与正式权重匹配的 24 道演示题 |
-| `research/` 下的配套 pyKT 源码 | 加载 EpiKT。具体目录和准备方式见部署文档。 |
-
-如果项目根目录的独立诊断环境不可用，可以在已有的 Conda `querystep` 环境安装依赖后启动。只有环境还没建立时，先运行 `conda create -n querystep python=3.11 pip`。
+只需避开占用的端口时，在终端复制以下两行。看到「QueryStep 已启动」后，到浏览器打开 [http://127.0.0.1:5174/](http://127.0.0.1:5174/)。在该地址检查服务时访问 [备用健康状态](http://127.0.0.1:8001/healthz)。
 
 ```bash
 cd "$HOME/Desktop/实习/projects/QueryStep"
+QUERYSTEP_BACKEND_PORT=8001 QUERYSTEP_FRONTEND_PORT=5174 QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
+```
+
+### 6.1 独立诊断环境缺失时
+
+新机器先按部署指南准备正式权重、题库和 pyKT 源码，用 `.env` 配置 Gemini 与本地知识库路径。现有 Mac 上可以先检查 `artifacts/diagnostics-venv/bin/python` 是否存在。准备文件的具体位置见部署文档。 [部署操作指南](../deploy/OPERATIONS.md)
+
+如果独立诊断环境缺失，使用现有 Conda 的 `querystep` 环境。安装后用它启动。
+
+```bash
+cd "$HOME/Desktop/实习/projects/QueryStep"
+source /opt/miniconda3/etc/profile.d/conda.sh
 conda activate querystep
-python -m pip install -e '.[api,kt,diagnostics]'
+python -m pip install -e '.[api,kt,diagnostics,knowledge]'
 npm --prefix web ci
-QUERYSTEP_DIAGNOSTICS_ENABLED=1 ./start.sh
+QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 ./start.sh
 ```
 
-如果 `conda activate` 提示当前终端没有初始化，在这台 Mac 可以先执行 `source /opt/miniconda3/etc/profile.d/conda.sh`。检查端口使用 `lsof -nP -iTCP:8000 -iTCP:5173 -sTCP:LISTEN`。希望用备用端口时，在项目根目录执行下方命令，并打开启动日志打印的 `5174` 页面地址。
+若 `conda activate querystep` 提示该环境不存在，先执行 `conda create -n querystep python=3.11 pip`，再执行上面从 `conda activate querystep` 开始的命令。
 
-```bash
-QUERYSTEP_BACKEND_PORT=8001 QUERYSTEP_FRONTEND_PORT=5174 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
-```
+### 6.2 知识库索引缺失时
 
-### 分开启动前后端
-
-排查后端启动日志时，可用两个终端分别启动。在第一个终端从项目根目录运行以下命令。这里使用本机已有的独立诊断环境。如已在 `querystep` 安装诊断依赖，可激活该环境，并把最后一行的 `artifacts/diagnostics-venv/bin/python` 改成 `python`。
+已有知识库的这台 Mac 可以直接使用第 1 节的启动命令。需要重建时，在项目根目录运行下面的命令。第一条模型路径适用于当前工作区，换机器时需改为该机器的 BAAI/BGE-small-zh-v1.5 本地模型目录。
 
 ```bash
 cd "$HOME/Desktop/实习/projects/QueryStep"
-set -a
-source ./.env
-set +a
-export QUERYSTEP_EPIKT_RUN="$PWD/artifacts/epikt-dbe-fold0"
-export QUERYSTEP_CATALOG="$PWD/artifacts/dbe-sql-approved.json"
-export QUERYSTEP_LLM_ALLOW_MAPPED_ITEMS=1
-export QUERYSTEP_DIAGNOSTICS_ENABLED=1
-artifacts/diagnostics-venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
-```
-
-看到 `Application startup complete` 后，另开终端启动前端。
-
-```bash
-cd "$HOME/Desktop/实习/projects/QueryStep/web"
-QUERYSTEP_API_PROXY=http://127.0.0.1:8000 npm run dev -- --strictPort
-```
-
-### Gemini 连通性探针
-
-需要单独检查普通 Gemini 助教的服务时，在项目根目录运行以下探针。它会向已经配置的模型服务发送合成 SQL 问题。
-
-```bash
-conda activate querystep
-set -a
-source ./.env
-set +a
-python -m tutor.check_provider
-```
-
-技术架构、验收对照和独立评估方法见 [多 Agent 扩展开发文档](QueryStep%20多%20Agent%20扩展开发文档.md)。权重及环境布置见 [部署操作指南](../deploy/OPERATIONS.md)。
-
-## 7. 体验自主错题教练
-
-在项目根目录安装 `knowledge` 依赖，并用已准备的 BAAI/BGE-small-zh-v1.5 本地模型目录建库。下方命令使用当前工作区已经缓存的模型。其它机器将 `QUERYSTEP_EMBEDDING_MODEL` 指向同一模型版本的本地目录。
-
-```bash
 export QUERYSTEP_EMBEDDING_MODEL="$PWD/../examples/居丽叶简历项目7：医疗助手/medix-agent-swarm/.venv/models/bge-small-zh-v1.5"
 export QUERYSTEP_KNOWLEDGE_INDEX="$PWD/artifacts/coach/knowledge.sqlite3"
 artifacts/diagnostics-venv/bin/python -m pip install -e '.[knowledge]'
 artifacts/diagnostics-venv/bin/python -m course_content.knowledge_index \
   --output "$QUERYSTEP_KNOWLEDGE_INDEX" --model "$QUERYSTEP_EMBEDDING_MODEL"
-QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
+QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD/artifacts/diagnostics-venv/bin/python" ./start.sh
 ```
 
-1. **LEFT JOIN。** 开无痕窗口，按第 4 节做到 81 号题并答错。在「自主错题教练」点「带我弄懂这题」，输入「查询课程规则，验证把右表状态条件从 ON 移到 WHERE 为什么可能少一行。」页面先显示课程依据或实验数据。若第一次对照两边一样，教练会继续用含边界数据的样例验证。
-2. **HAVING。** 另开新会话，按第 2 节做到 75 号题并答错。输入「查找课程规则并执行对照，HAVING COUNT(*) >= 2 和 > 2 为什么有时结果一样？」查看两个结果表和引用，核对计数恰好为 2 的组。
-3. **回看与下一题。** 刷新可恢复教练结果。迁移练习仍在错题反馈页，正式「下一题」沿用 EpiKT。网关超时保留已完成的证据，仍可直接用「运行诊断」。
+如果本地 `.env` 已经写了两个索引变量，启动时以 `.env` 读入的值为准。重建到新位置后，将 `.env` 内对应路径更新为实际位置，再启动。索引缺失时教练回退到审核卡片，模型和索引不匹配时回退到关键词检索。
 
-`/healthz` 的 `coach_ready` 表示工具进程已启动。实际向量检索以该轮轨迹标记的 `hybrid` 为准。索引未配置时回退审核卡，向量权重与索引不匹配时使用关键词结果。
+## 7. 单独确认 Gemini 服务
+
+如果网页能做题但助教连续回退，在另一个终端复制以下命令。这个探针会通过本机 `.env` 向已配置的模型服务发送合成 SQL 问题。
+
+```bash
+cd "$HOME/Desktop/实习/projects/QueryStep"
+set -a
+source ./.env
+set +a
+artifacts/diagnostics-venv/bin/python -m tutor.check_provider
+```
+
+查看探针是否返回模型与检查结果。遇到 `ReadTimeout` 时可以先用网页的快速诊断和迁移练习，模型联通后再试辅导。跨考点检索实现、评估和补查的实测范围见开发方案。 [自主错题教练与课程知识库开发方案](QueryStep%20自主错题教练与课程知识库开发方案.md)
