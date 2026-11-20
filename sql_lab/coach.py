@@ -1,7 +1,11 @@
 """Stateless coach tools. Student and application state stay outside this process."""
 
+from time import monotonic
+
 from course_content.diagnosis_cards import search as reviewed_search
+from course_content.evidence_retrieval import retrieve_evidence
 from course_content.sql_fixtures import JOIN_FIXTURE, JOIN_VARIANT, grouping
+from sql_lab.contracts import KnowledgeResult
 from sql_lab.executor import compare, execute, execute_fixture
 
 
@@ -33,6 +37,17 @@ def experiment(request):
 
 def search(request, index):
     if index is not None:
+        if request.track_coverage:
+            started = monotonic()
+            result = retrieve_evidence(index, request.query, request.topic, request.mode)
+            result["elapsed_ms"] = round((monotonic() - started) * 1000, 3)
+            if len(result["cards"]) > request.top_k:
+                result["cards"] = result["cards"][:request.top_k]
+                retained = {card["id"] for card in result["cards"]}
+                for goal in result["coverage"]:
+                    if goal["card_id"] not in retained:
+                        goal["card_id"] = None
+            return KnowledgeResult.model_validate(result).model_dump()
         return index.search(request.query, request.topic, request.top_k, request.mode)
     cards = [{
         "id": row["id"], "title": row["title"], "parent": row["section"], "text": row["text"],

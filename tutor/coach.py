@@ -18,7 +18,7 @@ from tutor.diagnosis_explanation import _safe_excerpt
 MAX_MODEL_CALLS = 3
 MAX_TOOL_CALLS = 4
 BUDGET_SECONDS = 8.0
-WORKFLOW_VERSION = "coach-v1"
+WORKFLOW_VERSION = "coach-v2"
 
 
 class SearchAction(Contract):
@@ -136,12 +136,20 @@ def _finish(state, requested=None, *, reason=None):
     else:
         cited = evidence if reason else []
     status = requested.finish if requested and not reason else "fallback"
+    coverage = next((event["coverage"] for event in state["trace"] if event.get("coverage")), [])
+    if status in {"hint", "transfer"} and coverage:
+        course_ids = {goal["card_id"] for goal in coverage if goal["card_id"]}
+        by_claim = [entry for entry in evidence
+                    if entry["kind"] == "course" and entry["data"]["id"] in course_ids]
+        observations = [entry for entry in cited if entry["kind"] == "experiment"]
+        cited = [*by_claim, *observations][:4]
     if status == "insufficient" or (status in {"hint", "transfer"} and not cited):
         status, reason = "fallback", "insufficient_evidence"
     return {"status": status, "reason": reason, "citations": [entry["id"] for entry in cited],
             "text": (" ".join(_summary(entry) for entry in cited)
                      or "这一轮还需要更多信息，才能判断该查哪条规则。"),
-            "question": QUESTIONS.get(requested.clarification) if requested and status == "clarify" else None}
+            "question": QUESTIONS.get(requested.clarification) if requested and status == "clarify" else None,
+            "coverage": coverage}
 
 
 def _unresolved(evidence):
@@ -158,7 +166,8 @@ class Coach:
         self.lab = lab
         self.budget = budget
 
-    async def run(self, question, topic, *, publish=None, scenario="matching", mode="hybrid", prior=()):
+    async def run(self, question, topic, *, publish=None, scenario="matching", mode="hybrid", prior=(),
+                  track_coverage=True):
         started = monotonic()
         deadline = started + self.budget
         initial: CoachState = {"question": _safe_excerpt(question, 500), "topic": topic,
@@ -255,11 +264,12 @@ class Coach:
             for action in state["plan"].actions:
                 if isinstance(action, SearchAction):
                     did_search = sum(event.get("tool") == KNOWLEDGE_TOOL for event in trace)
-                    if did_search >= 2:
+                    if did_search >= 2 or any(event.get("coverage") for event in trace):
                         continue
                     query = _safe_excerpt(action.query if did_search else state["question"], 500)
                     name = KNOWLEDGE_TOOL
-                    args = {"query": query, "topic": state["topic"], "mode": mode, "top_k": 3}
+                    args = {"query": query, "topic": state["topic"], "mode": mode, "top_k": 3,
+                            "track_coverage": track_coverage and not did_search}
                 else:
                     if (state["topic"] == "join") != (action.experiment in {"join_filter", "join_count"}):
                         continue
@@ -307,6 +317,10 @@ class Coach:
                         continue
                     if event["tool"] == KNOWLEDGE_TOOL:
                         event.update(retrieval=value["mode"], corpus=value["corpus"], elapsed_ms=value["elapsed_ms"])
+                        if value.get("coverage"):
+                            event.update(coverage=value["coverage"], passes=value["passes"])
+                            await record({"type": "coverage", "coverage": value["coverage"],
+                                          "retried": any(step["retry"] for step in value["passes"])})
                         new = [("course", card) for card in value["cards"] if card["id"] not in existing]
                         existing.update(card["id"] for _, card in new)
                     else:

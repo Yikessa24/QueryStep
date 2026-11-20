@@ -135,6 +135,7 @@ class KnowledgeRequest(Contract):
     topic: Literal["select", "where", "conditions", "distinct", "aggregate", "set_ops", "join", "subquery", "null"]
     top_k: int = Field(default=3, ge=1, le=3)
     mode: Literal["hybrid", "keyword", "vector"] = "hybrid"
+    track_coverage: bool = False
 
 
 class KnowledgeCard(Contract):
@@ -152,11 +153,37 @@ class KnowledgeCard(Contract):
     reviewed_on: str
 
 
+class EvidenceCoverage(Contract):
+    goal: str
+    title: str
+    card_id: str | None
+
+
+class SearchPass(Contract):
+    query: str
+    topic: str
+    limit: int
+    goal: str | None
+    retry: bool
+    ids: list[str]
+
+
 class KnowledgeResult(Contract):
     cards: list[KnowledgeCard] = Field(max_length=3)
     mode: Literal["hybrid", "keyword", "vector", "reviewed_cards"]
     corpus: str
     elapsed_ms: float
+    coverage: list[EvidenceCoverage] = Field(default_factory=list, max_length=2)
+    passes: list[SearchPass] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_coverage(self):
+        available = {card.id for card in self.cards}
+        goals = {entry.goal for entry in self.coverage}
+        if (len(goals) != len(self.coverage) or any(entry.card_id not in available
+                for entry in self.coverage if entry.card_id is not None)):
+            raise ValueError("Course coverage must refer to returned cards and unique goals.")
+        return self
 
 
 class CoachExperimentRequest(Contract):

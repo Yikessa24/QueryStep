@@ -4,10 +4,12 @@ type Request = <T>(path: string, body?: unknown) => Promise<T>;
 type Rows = { sql: string; parameters: Record<string, number>; columns: string[];
   rows: (number | string | null)[][]; row_count: number };
 type Evidence = { id: string } & (
-  { kind: "course"; data: { title: string; text: string; source_url: string; source_section: string; dialect: string } } |
+  { kind: "course"; data: { id?: string; title: string; text: string; source_url: string; source_section: string; dialect: string } } |
   { kind: "experiment"; data: { scenario: string; before: Rows; after: Rows; same: boolean; removed_keys: string[] } }
 );
-type Run = { id: string; message: string; status: string; events: { type: string; evidence?: Evidence; round?: number }[];
+type Coverage = { goal: string; title: string; card_id: string | null };
+type Run = { id: string; message: string; status: string;
+  events: { type: string; evidence?: Evidence; round?: number; coverage?: Coverage[]; retried?: boolean }[];
   result: { status: string; text: string; question: string | null; citations: string[] } | null };
 type View = { available: boolean; can_submit?: boolean; runs: Run[] };
 
@@ -98,7 +100,18 @@ export default function CoachPanel({ decisionId, request, readOnly }:
         ? <Observation key={index} runId={run.id} entry={event.evidence} />
         : event.type === "plan" && Number(event.round) > 1
           ? <li key={index}>已根据取得的证据检查下一步。</li>
-          : null)}</ul>
+          : event.coverage
+            ? <li key={index}>
+              <strong>课程依据</strong>{event.retried && " · 已补查缺失考点"}
+              <ul>{event.coverage.map((goal) => {
+                const item = run.events.find(({ evidence }) =>
+                  evidence?.kind === "course" && evidence.data.id === goal.card_id)?.evidence;
+                return <li key={goal.goal}>{goal.title} · {item
+                  ? <a href={`#coach-${run.id}-${item.id}`}>查看依据</a>
+                  : goal.card_id ? "已找到" : "暂未找到课程依据"}</li>;
+              })}</ul>
+            </li>
+            : null)}</ul>
       {run.status === "running" && <p role="status">正在查找依据或验证结果…</p>}
       {run.result && <div>
         <p>{run.result.text}</p>
