@@ -211,13 +211,20 @@ function App() {
   }
   function ask(event: FormEvent) {
     event.preventDefault();
-    if (review || !practice || !wrong || !message.trim() || busy) return;
+    const draft = message;
+    const text = draft.trim();
+    if (review || !practice || !wrong || !text || busy) return;
     const id = practice.decision_id;
-    const text = message.trim();
     setPendingMessage(text);
+    setMessage("");
     return perform(async () => {
-      const result = await api<Turn>(`/api/practice/${id}/tutor`, { message: text });
-      setTurns((existing) => [...existing, result]); setMessage("");
+      try {
+        const result = await api<Turn>(`/api/practice/${id}/tutor`, { message: text });
+        setTurns((existing) => [...existing, result]);
+      } catch (error) {
+        setMessage(draft);
+        throw error;
+      }
     }, "tutor");
   }
   function openTutor() { setAssistantTab("tutor"); setMobilePanel("assistant"); setFocusVersion((value) => value + 1); }

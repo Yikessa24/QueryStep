@@ -42,8 +42,8 @@ async function fixtures(context) {
     if (pathname.endsWith("/replay")) return reply({ chosen_item_id: 75, source: "epikt", comparison: { rule_item_id: 81, model_version: "ui-fixture" } });
     if (pathname.endsWith("/tutor")) {
       state.calls += 1;
-      if (body.message === "网络失败") return reply({ detail: "辅导服务暂不可用" }, 503);
       await new Promise((resolve) => { state.release = resolve; });
+      if (body.message === "网络失败") return reply({ detail: "辅导服务暂不可用" }, 503);
       const turn = { message: body.message, text: body.message === "超时" ? "先确定每组有哪些行。" : "先观察 `GROUP BY` 的结果，再验证 HAVING。<img src=x onerror=alert(1)>",
         source: body.message === "超时" ? "template" : "llm", fallback_reason: body.message === "超时" ? "llm_timeout" : null,
         action: "give_hint", citations: [{ id: "rule", title: "课程规则" }], memory_ids: ["note-1"] };
@@ -133,8 +133,11 @@ async function waitFor(check, message) {
     assert.equal(state.calls, beforeIme, "Chinese composition Enter must not submit");
     await textbox.evaluate((node) => node.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true })));
     assert.equal(state.calls, beforeIme, "Safari composition Enter must not submit");
-    await textbox.press("Enter");
+    const submittedText = (await textbox.inputValue()).trim();
+    await page.getByRole("button", { name: "发送", exact: true }).click();
     await page.getByText("助教正在思考…", { exact: true }).waitFor();
+    assert.equal(await textbox.inputValue(), "", "Sending must clear the composer before the response");
+    assert.equal(await page.locator(".user-message").last().textContent(), submittedText);
     assert.equal(await page.getByRole("button", { name: "下一题", exact: true }).isDisabled(), true);
     const composer = await page.locator(".chat-composer").boundingBox();
     assert.ok(composer.y + composer.height <= 1001, "Composer must remain within viewport");
@@ -146,9 +149,14 @@ async function waitFor(check, message) {
     await textbox.fill("超时"); await textbox.press("Enter");
     await waitFor(() => state.release !== null, "Fallback request was not sent"); state.release(); state.release = null;
     await page.getByText("助教响应超时，先为你提供课程提示。你可以重新提问。", { exact: true }).waitFor();
-    await textbox.fill("网络失败"); await textbox.press("Enter");
+    assert.equal(await textbox.inputValue(), "", "A completed fallback reply must leave the composer empty");
+    const failedDraft = "  网络失败  ";
+    await textbox.fill(failedDraft); await textbox.press("Enter");
+    await page.getByText("助教正在思考…", { exact: true }).waitFor();
+    assert.equal(await textbox.inputValue(), "", "Keyboard submission must also clear the composer immediately");
+    await waitFor(() => state.release !== null, "Failing request was not sent"); state.release(); state.release = null;
     await page.getByRole("alert").filter({ hasText: "辅导服务暂不可用" }).waitFor();
-    assert.equal(await textbox.inputValue(), "网络失败", "Failed request must keep draft");
+    assert.equal(await textbox.inputValue(), failedDraft, "A failed request must restore the original draft");
     await page.getByRole("tab", { name: /错题教练/ }).click();
     await page.getByText("该题暂无实验教练，可切换到普通助教继续提问。", { exact: true }).waitFor();
     await page.getByRole("tab", { name: /错题教练/ }).press("ArrowLeft");
