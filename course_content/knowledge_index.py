@@ -5,6 +5,7 @@ from contextlib import closing
 from datetime import date
 from hashlib import file_digest, sha256
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -25,6 +26,7 @@ OUT_OF_SCOPE = re.compile(r"\b(?:json_table|create\s+index|mysql|sql\s+server)\b
 EXPLICIT_SQL_OPERATORS = re.compile(r"\b(?:sum|coalesce|order\s+by|limit)\b")
 SEGMENTS = re.compile(r"[a-z_][a-z_0-9]*|\d+|[\u3400-\u9fff]+")
 HAN = re.compile(r"[\u3400-\u9fff]+")
+logger = logging.getLogger(__name__)
 
 
 def lexical_terms(text):
@@ -127,6 +129,8 @@ def search_lessons(query, topic=None, top_k=3):
     ranked = []
     if not OUT_OF_SCOPE.search(query.lower()):
         for key, card in chunks.items():
+            if card["dialect"] not in {"sqlite", "sql"}:
+                continue
             title = set(lexical_terms(card["title"]))
             keywords = set(lexical_terms(card["keywords"]))
             if not tokens & (title | keywords):
@@ -239,15 +243,37 @@ class KnowledgeIndex:
                 "corpus": self.manifest["corpus_sha256"], "elapsed_ms": round((monotonic() - start) * 1000, 3)}
 
 
+def open_index(path, model_path=None):
+    if not path:
+        return None
+    path = Path(path)
+    if not path.is_file():
+        logger.warning("Course index file unavailable")
+        return None
+    embedder = None
+    if model_path:
+        try:
+            embedder = Embedder(str(Path(model_path).resolve()))
+        except (ImportError, OSError, ValueError, RuntimeError) as error:
+            logger.warning("Course embedding unavailable (%s)", type(error).__name__)
+    try:
+        return KnowledgeIndex(path, embedder)
+    except (ImportError, OSError, ValueError, KeyError, RuntimeError, TypeError, sqlite3.Error) as error:
+        logger.warning("Course index unavailable (%s)", type(error).__name__)
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", default=MODEL_NAME)
     parser.add_argument("--revision")
+    parser.add_argument("--source", type=Path, default=SOURCE)
     args = parser.parse_args()
     if not Path(args.model).is_dir() and not args.revision:
         parser.error("set --revision to a Hugging Face commit or use a local --model directory")
-    print(json.dumps(build(args.output, Embedder(args.model, args.revision)), ensure_ascii=False))
+    print(json.dumps(build(args.output, Embedder(args.model, args.revision), directory=args.source),
+                     ensure_ascii=False))
 
 
 if __name__ == "__main__":

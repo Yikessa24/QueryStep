@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import sqlite3
 from threading import BoundedSemaphore
 from time import monotonic
 from typing import Literal
@@ -27,6 +28,19 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     }}
     for name, description in TOOL_INFO.items()
+]
+SEARCH_TOOLS = [
+    {"type": "function", "function": {
+        "name": "retrieve_course_notes",
+        "description": "在审核过的本地 SQLite 课程资料中查找与问题相关的说明和独立例子。",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 500,
+                                     "description": "要查证的 SQL 概念或条件。省略时按学生本轮问题查找。"}},
+            "additionalProperties": False,
+        },
+    }},
+    TOOLS[1],
 ]
 HISTORY_TOOL_NAME = "retrieve_tutor_history"
 HISTORY_TOOL = {"type": "function", "function": {
@@ -61,12 +75,13 @@ class TutorAction(BaseModel):
 class TutorAgent:
     def __init__(self, model: ChatModel | None = None, timeout: float = 5.0, *,
                  allow_mapped_items: bool = False, unavailable: str = "llm_unconfigured",
-                 max_inflight: int = 4):
+                 max_inflight: int = 4, course_search=None):
         self.model = model
         self.timeout = timeout
         self.allow_mapped_items = allow_mapped_items
         self.unavailable = unavailable
         self.capacity = BoundedSemaphore(max_inflight)
+        self.course_search = course_search
 
     @staticmethod
     def _tool(name: str, item: Item) -> dict:
@@ -76,6 +91,20 @@ class TutorAgent:
         if name == "get_worked_example":
             return {"id": f"example-{key}", "title": "审核例题", "text": EXAMPLES[key]}
         raise ValueError("Tool is outside the course allowlist.")
+
+    def _course_notes(self, item: Item, query: str) -> tuple[list[dict], dict]:
+        try:
+            result = self.course_search(_redact(query), item.topic, top_k=3)
+        except (OSError, RuntimeError, sqlite3.Error) as error:
+            logger.warning("Tutor course retrieval unavailable (%s)", type(error).__name__)
+            return [self._tool("retrieve_course_notes", item)], {
+                "retrieval_mode": "reviewed_note", "retrieved_ids": [],
+            }
+        cards = [{"id": card["id"], "title": card["title"], "text": card["text"],
+                  "url": card["source_url"]} for card in result["cards"]]
+        event = {"retrieval_mode": result["mode"], "corpus": result["corpus"],
+                 "retrieved_ids": [card["id"] for card in cards]}
+        return cards or [self._tool("retrieve_course_notes", item)], event
 
     @staticmethod
     def _template(item: Item, reason: str, trace: list[dict]) -> dict:
@@ -125,6 +154,12 @@ class TutorAgent:
             context["reviewed_hint"] = reviewed_hint(item.topic, item.prompt, item.hint)
         if memories:
             context["confirmed_learning_notes"] = [_redact(record["summary"]) for record in memories]
+        search_guidance = ""
+        if self.course_search:
+            search_guidance = (
+                "需要课程资料时，用 retrieve_course_notes 查询相关概念。追问指代前文时，将关键词补全成独立查询。"
+                "资料没有覆盖具体问题时，说明能确认的课程原则，避免把当前题的通用提示当成查证结果。"
+            )
         messages = [
             {"role": "system", "content":
              "你是 QueryStep 的中文 SQL 助教。根据学生回答逐步追问、提示、举例或邀请继续。"
@@ -134,14 +169,17 @@ class TutorAgent:
              "近期对话按 recent_turn_numbers 排列。回看已经提供的历史时可以复述已有问答。"
              "复述指定轮次时使用 requested_history_source_id，或引用历史工具返回的 id。"
              "对指代不清的旧内容先询问轮次。"
-             "展示新例子时应先用例题工具。第一轮先提供辅导，不要直接邀请继续。最终仅返回 JSON："
+             "展示新例子时应先用例题工具。第一轮先提供辅导，不要直接邀请继续。"
+             + search_guidance + "最终仅返回 JSON："
              '{"action":"ask_clarifying|give_hint|show_example|invite_practice",'
              '"text":"中文回复","source_ids":["实际引用的ID"]}'},
             {"role": "user", "content": json.dumps({"course_context": context}, ensure_ascii=False)},
         ]
         for turn in recent:
             messages.extend(turn_messages(turn, mapped_lesson_note))
-        messages.append({"role": "user", "content": _redact(message)})
+        student_message = _redact(message)
+        messages.append({"role": "user", "content": student_message})
+        tools = SEARCH_TOOLS if self.course_search else TOOLS
         deadline = monotonic() + self.timeout
         try:
             for index in range(3):
@@ -155,7 +193,7 @@ class TutorAgent:
                         tool_choice={"type": "function", "function": {"name": HISTORY_TOOL_NAME}},
                     )
                 else:
-                    reply = self.model.reply(messages, TOOLS if index < 2 else [], remaining)
+                    reply = self.model.reply(messages, tools if index < 2 else [], remaining)
                 if monotonic() >= deadline:
                     return self._template(item, "llm_timeout", trace)
                 calls = reply.get("tool_calls") or []
@@ -171,20 +209,31 @@ class TutorAgent:
                             or not call_id or call_id in call_ids):
                         return self._template(item, "invalid_tool_call", trace)
                     args = json.loads(call["function"]["arguments"])
+                    retrieval = {}
                     if recall_now:
                         if (name != HISTORY_TOOL_NAME or not isinstance(args, dict)
                                 or type(args.get("turn_number")) is not int or args != {"turn_number": requested}):
                             return self._template(item, "invalid_tool_call", trace)
                         result = recall_turn(prior, args["turn_number"], mapped_lesson_note)
+                        sources = [result]
+                    elif name == "retrieve_course_notes" and self.course_search:
+                        if not isinstance(args, dict) or args.keys() - {"query"}:
+                            return self._template(item, "invalid_tool_call", trace)
+                        query = args.get("query", student_message)
+                        if not isinstance(query, str) or not 1 <= len(query.strip()) <= 500:
+                            return self._template(item, "invalid_tool_call", trace)
+                        sources, retrieval = self._course_notes(item, query.strip())
+                        result = {"cards": sources, "used_reviewed_note": not retrieval["retrieved_ids"]}
                     else:
                         if name not in TOOL_INFO or args != {}:
                             return self._template(item, "invalid_tool_call", trace)
                         result = self._tool(name, item)
+                        sources = [result]
                     call_ids.add(call_id)
-                    if result["id"] in citations:
+                    if all(source["id"] in citations for source in sources):
                         return self._template(item, "repeated_tool", trace)
-                    citations[result["id"]] = result
-                    event = {"tool": name, "source_id": result["id"]}
+                    citations.update((source["id"], source) for source in sources)
+                    event = {"tool": name, "source_id": sources[0]["id"], **retrieval}
                     if recall_now:
                         event["turn_number"] = args["turn_number"]
                     trace.append(event)
@@ -232,4 +281,5 @@ class TutorAgent:
                 for source in dict.fromkeys(output.source_ids)]
         return {"source": "llm", "action": output.action, "text": output.text,
                 "citations": refs, "trace": trace, "fallback_reason": None,
-                "model_version": getattr(self.model, "model", None), "prompt_version": "sql-tutor-v4"}
+                "model_version": getattr(self.model, "model", None),
+                "prompt_version": "sql-tutor-v5" if self.course_search else "sql-tutor-v4"}

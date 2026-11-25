@@ -5,7 +5,6 @@ import asyncio
 from hashlib import sha256
 import logging
 from pathlib import Path
-import sqlite3
 from threading import Event
 from uuid import uuid4
 
@@ -133,18 +132,9 @@ def main() -> None:
     args = parser.parse_args()
     index = None
     if args.fixture in {COACH_SCOPE, WORKBENCH_SCOPE} and args.knowledge_index:
-        from course_content.knowledge_index import Embedder, KnowledgeIndex
+        from course_content.knowledge_index import open_index
 
-        embedder = None
-        if args.embedding_model:
-            try:
-                embedder = Embedder(str(args.embedding_model.resolve()))
-            except (ImportError, OSError, ValueError, RuntimeError) as error:
-                logging.warning("Coach embedding unavailable (%s)", type(error).__name__)
-        try:
-            index = KnowledgeIndex(args.knowledge_index, embedder)
-        except (ImportError, OSError, ValueError, KeyError, RuntimeError, TypeError, sqlite3.Error) as error:
-            logging.warning("Coach knowledge unavailable (%s)", type(error).__name__)
+        index = open_index(args.knowledge_index, args.embedding_model)
     try:
         asyncio.run(serve(args.fixture, index))
     finally:

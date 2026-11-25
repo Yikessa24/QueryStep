@@ -189,3 +189,58 @@ python -m evals.evidence_coverage --index "$QUERYSTEP_KNOWLEDGE_INDEX" \
 用相同的 `gemini-3-flash`、MCP 工具与 SQL 实验配置，在四道自编题上切换拆题选项。原流程有 2/4 道在最终展示中引用两份课程依据，拆题流程有 4/4，其中两边各有一道使用保留证据的降级输出。只计完成辅导且引用齐备的案例，分别为 1/4 和 3/4。该小样本验证了片段能够进入页面引用，完整的同预算提升采用 §8.2 的 60 题检索结果。原始联调记录位于 `artifacts/coach/evidence-coverage-coach.jsonl`。
 
 本轮热运行检索 P95 分别为 A 6.02 ms、B 17.23 ms、D 6.70 ms。时间包含本地拆题、查询、合并与选证，不含 Gemini 网关、MCP 往返和网页轮询。67 项自动测试和前端构建均通过。
+
+## 9. 课程语料扩充与普通辅导接入
+
+按 24 道已审核的 SQL 题盘点考点，新增 16 张 SQLite 卡片，本地索引由 26 张增至 42 张。每张新增卡片包含可运行的合成例子，16 个例子均在内存 SQLite 中核对了结果。卡片使用自编说明与示例，并链接到官方资料。
+
+| 题库考点 | 对应题数 | 本轮盘点的内容 |
+| --- | ---: | --- |
+| 投影 | 3 | 输出列、星号展开、列数与行数 |
+| 行筛选 | 2 | 文本等值比较、`LOWER()` 的 ASCII 范围 |
+| 复合条件 | 1 | `OR` 的两侧同时为真时只保留当前行一次 |
+| 去重 | 1 | 按输出整行去重 |
+| 聚合与分组 | 5 | `COUNT(*)`、列计数、`MIN()`、分组后的行数、`HAVING` 与边界 |
+| 集合运算 | 2 | `UNION`、`UNION ALL` 与 `EXCEPT` |
+| 连接 | 6 | 笛卡尔积、`INNER JOIN`、`NATURAL JOIN`、`LEFT JOIN`、逗号连接后筛选 |
+| 子查询 | 4 | 相关子查询、`EXISTS`、`NOT EXISTS`、`IN` 与空值边界 |
+
+普通辅导的 `retrieve_course_notes` 接受可选 `query`。Gemini 可以用它补全追问中的考点，省略时用学生本轮问题检索。服务端把当前考点作为排序提示，允许查到其他考点。查到的最多三张 SQLite 卡片放进工具回包。后端仅接受本轮工具返回的引用 ID。普通辅导和实验教练使用同一语料、索引格式和混合检索实现，各自在其服务进程里以只读方式打开索引。缺少索引时查审核 Markdown，缺少匹配的向量模型时走关键词检索，未命中或检索出错时返回预写的本题笔记。浏览器的 `tutor` 响应会记录检索模式、索引版本和召回 ID。已确认学习笔记、例题工具、按轮次回查和 EpiKT 推荐走原有链路。
+
+### 9.1 同预算评估
+
+用 `evals/tutor_course_cases.json` 的 24 条原创追问做对照，每条对应一题的考点，并附 3 条范围外问题。在两版索引上使用同一模型、算法和 Top 3 预算。旧索引指纹为 `af0601a9eb13`，新索引为 `2a329b4f082c`。证据齐备指 Top 3 包含该问题要求的所有证据组。下表衡量本地检索，样本来自本轮语料建设所用的题库范围。
+
+| 指标 | 26 张旧库 | 42 张新库 |
+| --- | ---: | ---: |
+| 混合检索，追问证据齐备 | 10/24 | 20/24 |
+| 混合检索，证据组命中 | 10/25 | 21/25 |
+| 关键词检索，追问证据齐备 | 9/24 | 22/24 |
+| 混合检索，本轮范围外问题误召回 | 0/3 | 0/3 |
+| 混合检索，本地检索 P95 | 3.98 ms | 4.54 ms |
+| 原有 60 道跨考点评估，D 组双证据齐备 | 57/60 | 57/60 |
+| 原有范围外用例，D 组误召回 | 4/10 | 6/10 |
+
+混合检索仍有四条追问未找齐依据，涉及输出字段、投影的行列区别、`COUNT` 搭配 `MIN` 和连接后筛选。范围外误召回增加的两个样本是 PostgreSQL WAL 和 OpenCV。这些结果体现了覆盖和排序的不同影响。关键词在本组追问上更准，混合检索在扩库后仍存在相近卡片抢占 Top 3 的情况。P95 是本机热运行的检索耗时。普通辅导另用 FastAPI 与真实 BGE 索引联调，通过模拟模型网关验证「自然追问 → 工具调用 → 检索返回 → 第二次模型调用 → 响应引用」和伪造引用拒绝。以上指标不包含真实 Gemini 响应时延或学生学习效果。
+
+### 9.2 复跑
+
+在根目录激活安装了 `knowledge` 依赖的环境，设置 `QUERYSTEP_EMBEDDING_MODEL` 为本机 BGE 模型目录。用以下命令重建两版索引。正式启动所用索引的更新见[体验手册第 5.2 节](QueryStep%20本地启动与体验手册.md#52-知识库索引缺失时)。
+
+```bash
+mkdir -p artifacts/phase1-baseline-source
+git archive 14c97e9 course_content/knowledge | tar -x -C artifacts/phase1-baseline-source
+python -m course_content.knowledge_index --model "$QUERYSTEP_EMBEDDING_MODEL" \
+  --source artifacts/phase1-baseline-source/course_content/knowledge \
+  --output artifacts/workbench-knowledge-phase1-baseline.sqlite3
+python -m course_content.knowledge_index --model "$QUERYSTEP_EMBEDDING_MODEL" \
+  --output artifacts/workbench-knowledge-phase1.sqlite3
+for version in phase1-baseline phase1; do
+  python -m evals.course_search --model "$QUERYSTEP_EMBEDDING_MODEL" \
+    --index "artifacts/workbench-knowledge-$version.sqlite3" \
+    --cases evals/tutor_course_cases.json --output "artifacts/phase1-course-$version.json"
+  python -m evals.evidence_coverage --model "$QUERYSTEP_EMBEDDING_MODEL" \
+    --index "artifacts/workbench-knowledge-$version.sqlite3" \
+    --output "artifacts/phase1-evidence-$version.json"
+done
+```

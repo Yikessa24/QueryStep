@@ -1,11 +1,13 @@
 import asyncio
 import json
 from dataclasses import replace
+import sqlite3
 import unittest
 
 import httpx
 
 from api.catalog import Catalog, DEFAULT_CATALOG
+from course_content.knowledge_index import search_lessons
 from tutor.agent import TutorAgent
 from tutor.check_provider import choose_gemini, probe
 from tutor.provider import ChatModel, measure_calls
@@ -248,6 +250,60 @@ class TutorTest(unittest.TestCase):
         self.assertIn("一列、三行", requests[-1][-1]["content"])
         self.assertNotIn("private_table", str(requests))
         self.assertIn("结果行和结果列", TutorAgent().respond(item, "请给个提示。", [])["text"])
+
+    def test_course_tool_searches_for_follow_up_and_only_exposes_returned_citations(self):
+        item = Catalog.load(DEFAULT_CATALOG).items[2]
+        query = "LOWER 遇到大小写不一样的名称时怎么比较？"
+
+        class FakeModel:
+            def __init__(self, final_source):
+                self.final_source = final_source
+
+            def reply(self, messages, tools, timeout):
+                if messages[-1]["role"] == "user":
+                    schema = tools[0]["function"]["parameters"]
+                    self_search.assertIn("query", schema["properties"])
+                    return tool("retrieve_course_notes", {"query": query})
+                payload = json.loads(messages[-1]["content"])
+                self_search.assertFalse(payload["used_reviewed_note"])
+                self_search.assertTrue(any(card["id"] == "text-case/lower-ascii" and "ASCII" in card["text"]
+                                           for card in payload["cards"]))
+                return action("give_hint", "先把字母转成小写，再和筛选条件比较。", [self.final_source])
+
+        self_search = self
+        for source in ("text-case/lower-ascii", "invented/source"):
+            result = TutorAgent(FakeModel(source), course_search=search_lessons).respond(item, "那大小写呢？", [])
+            self.assertIn("text-case/lower-ascii", result["trace"][0]["retrieved_ids"])
+            self.assertEqual(result["trace"][0]["retrieval_mode"], "reviewed_cards")
+            if source == "invented/source":
+                self.assertEqual(result["fallback_reason"], "invalid_citation")
+            else:
+                self.assertEqual(result["citations"], [{"id": source, "title": "LOWER 将 ASCII 字母转为小写",
+                                                       "url": "https://www.sqlite.org/lang_corefunc.html#lower"}])
+
+    def test_course_tool_uses_reviewed_note_on_empty_search_or_error(self):
+        item = Catalog.load(DEFAULT_CATALOG).items[2]
+        query = "MySQL 中如何用 JSON_TABLE 展开数组？"
+
+        def unavailable(*_args, **_kwargs):
+            raise sqlite3.OperationalError()
+
+        class FakeModel:
+            def reply(self, messages, tools, timeout):
+                if messages[-1]["role"] == "user":
+                    return tool("retrieve_course_notes")
+                payload = json.loads(messages[-1]["content"])
+                self_search.assertTrue(payload["used_reviewed_note"])
+                self_search.assertEqual([card["id"] for card in payload["cards"]], ["note-where"])
+                return action("give_hint", "课程里可以先判断每一行是否满足条件。", ["note-where"])
+
+        self_search = self
+        for search, mode in ((search_lessons, "reviewed_cards"), (unavailable, "reviewed_note")):
+            with self.subTest(mode=mode):
+                result = TutorAgent(FakeModel(), course_search=search).respond(item, query, [])
+                self.assertEqual(result["trace"][0]["retrieval_mode"], mode)
+                self.assertEqual(result["trace"][0]["retrieved_ids"], [])
+                self.assertEqual(result["citations"][0]["id"], "note-where")
 
     def test_provider_rejects_remote_http_without_explicit_opt_in(self):
         with self.assertRaisesRegex(ValueError, "requires HTTPS"):

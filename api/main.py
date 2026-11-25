@@ -110,6 +110,7 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
             recommendation = Recommender(scoring, reason)
 
         chat = None
+        tutor_index = None
         tutoring = tutor
         if not tutoring:
             base = os.environ.get("QUERYSTEP_LLM_BASE_URL")
@@ -131,9 +132,17 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
                 except ValueError:
                     unavailable = "llm_invalid_configuration"
                     logger.warning("Tutor configuration rejected; using reviewed hints")
+            course_search = None
+            if chat:
+                from course_content.knowledge_index import open_index, search_lessons
+
+                tutor_index = open_index(os.environ.get("QUERYSTEP_KNOWLEDGE_INDEX"),
+                                         os.environ.get("QUERYSTEP_EMBEDDING_MODEL"))
+                course_search = tutor_index.search if tutor_index else search_lessons
             tutoring = TutorAgent(
                 chat, timeout=timeout, unavailable=unavailable,
                 allow_mapped_items=os.environ.get("QUERYSTEP_LLM_ALLOW_MAPPED_ITEMS") == "1",
+                course_search=course_search,
             )
         app.state.practice = Practice(database, configured_catalog, recommendation, tutoring)
         app.state.diagnostics = None
@@ -194,6 +203,8 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
             if chat:
                 await chat.aclose()
                 chat.close()
+            if tutor_index:
+                tutor_index.close()
             if scoring:
                 scoring.close()
             database.engine.dispose()
