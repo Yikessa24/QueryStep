@@ -126,7 +126,8 @@ def create_app(database_url=None, catalog=None, recommender=None, tutor=None) ->
                     if not 0.1 <= timeout <= 30:
                         raise ValueError("The tutor timeout must be between 0.1 and 30 seconds.")
                     insecure = os.environ.get("QUERYSTEP_LLM_ALLOW_INSECURE_HTTP") == "1"
-                    chat = ChatModel(base, model.strip(), key, allow_insecure_http=insecure)
+                    retries = int(os.environ.get("QUERYSTEP_LLM_TRANSIENT_RETRIES", "2"))
+                    chat = ChatModel(base, model.strip(), key, allow_insecure_http=insecure, max_retries=retries)
                     if chat.client.base_url.scheme == "http" and insecure:
                         logger.warning("Tutor uses explicitly enabled unencrypted HTTP")
                 except ValueError:

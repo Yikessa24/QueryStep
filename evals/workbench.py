@@ -128,7 +128,7 @@ def arm_budget(arm, seconds=20.0):
             "per_call_output_token_limit": 768 if agent else 512,
             "total_requested_output_token_limit": 3840 if agent else 512,
             "per_call_input_utf8_byte_limit": 65536,
-            "per_model_call_seconds": 8.0,
+            "per_model_call_seconds": 10.0,
             "per_tool_call_seconds": 4.0 if agent else 8.0,
             "input_token_limit": None,
             "note": "Output-token request caps and input-byte caps, not a provider-independent total-token cap; unequal arm budgets."}
@@ -423,7 +423,7 @@ def outcome_flags(result, *, failure=None, audit=()):
 
 
 async def run_arm(case, arm, model, model_id, public, *, context=None, knowledge_args=(),
-                  budget_seconds=20, oracle=None, lab_factory=None):
+                  budget_seconds=20, oracle=None, lab_factory=None, shared_lab=None):
     from langsmith import tracing_context
     from sql_lab.client import open_lab
     from tutor.workbench_coach import WorkbenchCoach
@@ -462,6 +462,9 @@ async def run_arm(case, arm, model, model_id, public, *, context=None, knowledge
         try:
             async with asyncio.timeout(budget["wall_seconds"]):
                 if arm == "direct":
+                    result = await active()
+                elif shared_lab is not None:
+                    adapter = ToolAdapter(shared_lab, public, budget)
                     result = await active()
                 else:
                     async with (lab_factory or open_lab)("workbench", knowledge_args=knowledge_args) as lab:
@@ -590,6 +593,10 @@ def manifest(cases, split):
 
 
 async def evaluate_suite(args, cases, validation, oracle):
+    from contextlib import AsyncExitStack
+    from sql_lab.client import open_lab
+    from tutor.workbench_coach import PROMPT_VERSION as COACH_PROMPT_VERSION
+
     base_url = os.environ.get("QUERYSTEP_LLM_BASE_URL")
     model_id = os.environ.get("QUERYSTEP_LLM_MODEL")
     if not base_url or not model_id:
@@ -603,9 +610,10 @@ async def evaluate_suite(args, cases, validation, oracle):
     capacity = asyncio.Semaphore(args.concurrency)
     arms = list(dict.fromkeys(args.arms))
     model = ChatModel(base_url, model_id, os.environ.get("QUERYSTEP_LLM_API_KEY"),
-                      allow_insecure_http=os.environ.get("QUERYSTEP_LLM_ALLOW_INSECURE_HTTP") == "1")
+                      allow_insecure_http=os.environ.get("QUERYSTEP_LLM_ALLOW_INSECURE_HTTP") == "1",
+                      max_retries=args.transient_retries)
 
-    async def run_case(index, case):
+    async def run_case(index, case, shared_lab):
         # Frozen once per case; the same serialized public input is used by all arms.
         public = frozen_input(case)
         rows = []
@@ -615,19 +623,33 @@ async def evaluate_suite(args, cases, validation, oracle):
             for arm in order:
                 row = await run_arm(case, arm, model, model_id, public, context=context,
                                     knowledge_args=tuple(knowledge_args), budget_seconds=args.budget_seconds,
-                                    oracle=oracle)
+                                    oracle=oracle, shared_lab=shared_lab)
                 rows.append(row)
                 print(f"{case.id} {arm} {row['predicted']} fallback={row['fallback_reason'] or 'none'} "
                       f"calls={row['usage_summary']['provider_calls']} ms={row['elapsed_ms']}", flush=True)
         return rows
 
     try:
-        groups = await asyncio.gather(*(run_case(index, case) for index, case in enumerate(cases)))
+        async with AsyncExitStack() as stack:
+            shared_lab = None
+            if args.mcp_mode == "warm" and any(arm != "direct" for arm in arms):
+                shared_lab = await stack.enter_async_context(
+                    open_lab("workbench", knowledge_args=tuple(knowledge_args))
+                )
+            groups = await asyncio.gather(*(run_case(index, case, shared_lab) for index, case in enumerate(cases)))
     finally:
         await model.aclose()
         model.close()
     rows = [row for group in groups for row in group]
-    report = {**manifest(cases, args.split), "model": model_id, "baseline_prompt_version": PROMPT_VERSION,
+    base_manifest = manifest(cases, args.split)
+    if args.mcp_mode == "warm":
+        base_manifest["metric_definitions"]["latency"] = (
+            "Arm wall time reusing a warm MCP process (matching production API), excluding MCP startup, label audit, "
+            "and evaluation-only replay; descriptive p50/p95, no confidence intervals."
+        )
+    report = {**base_manifest, "model": model_id, "baseline_prompt_version": PROMPT_VERSION,
+              "coach_prompt_version": COACH_PROMPT_VERSION, "mcp_mode": args.mcp_mode,
+              "transient_retries": args.transient_retries,
               "label_validation": validation, "concurrency": args.concurrency, "arms": arms,
               "arm_order": "deterministic rotation by selected-case index",
               "budgets": {arm: arm_budget(arm, args.budget_seconds) for arm in arms},
@@ -650,6 +672,10 @@ def parser():
     result.add_argument("--limit", type=int)
     result.add_argument("--concurrency", type=int, choices=(1, 2, 3), default=1)
     result.add_argument("--budget-seconds", type=float, default=20)
+    result.add_argument("--mcp-mode", choices=("cold", "warm"), default="cold",
+                        help="Launch MCP per arm (cold) or reuse one warm MCP process across the suite (warm).")
+    result.add_argument("--transient-retries", type=int, choices=(0, 1, 2, 3), default=0,
+                        help="Bounded backoff retries for transient 429/502/503/504 errors, applied identically to all arms.")
     result.add_argument("--output", type=Path, help="New JSON report path; existing files are refused.")
     result.add_argument("--annotation-output", type=Path, help="Optional new blinded, unannotated JSON; keep report/key separate.")
     result.add_argument("--index", type=Path)

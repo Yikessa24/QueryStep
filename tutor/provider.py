@@ -1,13 +1,17 @@
 """Minimal OpenAI-compatible transport shared by the tutor and its probe."""
 
+import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 from ipaddress import ip_address
+from time import monotonic, sleep
 
 import httpx
 
 
 _meter: ContextVar[list[dict] | None] = ContextVar("provider_meter", default=None)
+TRANSIENT_HTTP_STATUSES = frozenset({429, 502, 503, 504})
+MAX_TRANSIENT_RETRIES = 3
 
 
 @contextmanager
@@ -33,10 +37,16 @@ def _loopback(host: str) -> bool:
         return False
 
 
+def _retry_delay(attempt: int, remaining: float) -> float | None:
+    delay = min(0.4 * (2 ** attempt), 1.5)
+    return delay if remaining > delay + 0.5 else None
+
+
 class ChatModel:
     def __init__(self, base_url: str, model: str, api_key: str | None, *,
                  allow_insecure_http: bool = False,
-                 transport: httpx.BaseTransport | None = None):
+                 transport: httpx.BaseTransport | None = None,
+                 max_retries: int = 0):
         try:
             url = httpx.URL(base_url.strip())
         except httpx.InvalidURL as error:
@@ -47,12 +57,15 @@ class ChatModel:
         if (url.scheme == "http" and not allow_insecure_http
                 and (api_key or not _loopback(url.host))):
             raise ValueError("An authenticated or remote model service requires HTTPS by default.")
+        if type(max_retries) is not int or not 0 <= max_retries <= MAX_TRANSIENT_RETRIES:
+            raise ValueError(f"max_retries must be an integer in 0..{MAX_TRANSIENT_RETRIES}.")
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self.client = httpx.Client(
             base_url=str(url).rstrip("/") + "/", headers=headers, trust_env=False,
             follow_redirects=False, transport=transport,
         )
         self.model = model
+        self.max_retries = max_retries
         self._async_client = None
 
     def list_models(self, timeout: float = 8) -> list[str]:
@@ -70,14 +83,30 @@ class ChatModel:
             body["tool_choice"] = tool_choice
         if response_format:
             body["response_format"] = response_format
-        record = self._start_call()
-        try:
-            response = self.client.post("chat/completions", json=body, timeout=timeout)
-        except httpx.RequestError as error:
-            if record is not None:
-                record["error"] = "transport_timeout" if isinstance(error, httpx.TimeoutException) else "transport_error"
-            raise
-        return self._read_message(response, record)
+        deadline = monotonic() + timeout
+        for attempt in range(self.max_retries + 1):
+            remaining = deadline - monotonic()
+            record = self._start_call()
+            try:
+                response = self.client.post("chat/completions", json=body, timeout=max(0.05, remaining))
+            except httpx.RequestError as error:
+                if record is not None:
+                    record["error"] = "transport_timeout" if isinstance(error, httpx.TimeoutException) else "transport_error"
+                if attempt < self.max_retries and isinstance(error, (httpx.ConnectError, httpx.RemoteProtocolError)):
+                    delay = _retry_delay(attempt, deadline - monotonic())
+                    if delay is not None:
+                        sleep(delay)
+                        continue
+                raise
+            if attempt < self.max_retries and response.status_code in TRANSIENT_HTTP_STATUSES:
+                if record is not None:
+                    record.update(error="http_error", http_status=response.status_code)
+                delay = _retry_delay(attempt, deadline - monotonic())
+                if delay is not None:
+                    sleep(delay)
+                    continue
+            return self._read_message(response, record)
+        raise RuntimeError("Exhausted model retry loop.")
 
     def _request_body(self, messages, *, model=None, max_tokens=150):
         return {"model": model or self.model, "messages": messages, "temperature": 0.2, "max_tokens": max_tokens}
@@ -90,14 +119,30 @@ class ChatModel:
             )
         body = self._request_body(messages, model=model, max_tokens=max_tokens)
         body["response_format"] = {"type": "json_object"}
-        record = self._start_call()
-        try:
-            response = await self._async_client.post("chat/completions", json=body, timeout=timeout)
-        except httpx.RequestError as error:
-            if record is not None:
-                record["error"] = "transport_timeout" if isinstance(error, httpx.TimeoutException) else "transport_error"
-            raise
-        return self._read_message(response, record)
+        deadline = monotonic() + timeout
+        for attempt in range(self.max_retries + 1):
+            remaining = deadline - monotonic()
+            record = self._start_call()
+            try:
+                response = await self._async_client.post("chat/completions", json=body, timeout=max(0.05, remaining))
+            except httpx.RequestError as error:
+                if record is not None:
+                    record["error"] = "transport_timeout" if isinstance(error, httpx.TimeoutException) else "transport_error"
+                if attempt < self.max_retries and isinstance(error, (httpx.ConnectError, httpx.RemoteProtocolError)):
+                    delay = _retry_delay(attempt, deadline - monotonic())
+                    if delay is not None:
+                        await asyncio.sleep(delay)
+                        continue
+                raise
+            if attempt < self.max_retries and response.status_code in TRANSIENT_HTTP_STATUSES:
+                if record is not None:
+                    record.update(error="http_error", http_status=response.status_code)
+                delay = _retry_delay(attempt, deadline - monotonic())
+                if delay is not None:
+                    await asyncio.sleep(delay)
+                    continue
+            return self._read_message(response, record)
+        raise RuntimeError("Exhausted model retry loop.")
 
     @staticmethod
     def _start_call():

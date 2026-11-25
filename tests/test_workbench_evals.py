@@ -620,6 +620,16 @@ class ExecutionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["fallback_reason"], "model_error")
         self.assertNotIn("PRIVATE_SECRET", json.dumps(row))
 
+    async def test_warm_shared_lab_reuses_mcp_session_without_cold_launch(self):
+        lab = FakeLab()
+        model = ScriptedModel(action("check_student_sql", scenarios=list(SCENARIOS), seed=0), finish())
+        row = await run_arm(CASES[0], "agent", model, "offline", frozen_input(CASES[0]),
+                            lab_factory=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not cold start")),
+                            shared_lab=lab)
+        self.assertTrue(row["verdict_correct"])
+        self.assertEqual(row["tool_attempts"], 1)
+        self.assertEqual(len(lab.calls), 1)
+
 
 def httpx_timeout():
     import httpx

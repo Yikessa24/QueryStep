@@ -827,6 +827,70 @@ class WorkbenchCoachTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, ["plan", "execute", "observe"])
         self.assertIn("additionalProperties", json.dumps(Plan.model_json_schema()))
 
+    async def test_compact_prompt_and_check_coverage_exclude_run_student_sql(self):
+        model = Model(
+            planned(action("run_student_sql", scenario="sample")),
+            planned(action("check_student_sql", scenarios=["boundary", "duplicates", "empty"])),
+            planned(action("check_student_sql", scenarios=["sample"])),
+            finished("e2", "e3"),
+        )
+        result, _, _ = await self.run_coach(model)
+        self.assertEqual(result["mode"], "agent")
+        system_bytes = len(model.messages[0][0]["content"].encode())
+        self.assertLess(system_bytes, 3000)
+        # Round 2 after run_student_sql(sample): sample is still unchecked.
+        p1 = json.loads(model.messages[1][-1]["content"])
+        self.assertEqual(p1["checked_scenarios"], {})
+        self.assertEqual(p1["unchecked_scenarios"], ["sample", "boundary", "empty", "duplicates"])
+        # Round 3 after checking boundary/duplicates/empty: only sample remains unchecked.
+        p2 = json.loads(model.messages[2][-1]["content"])
+        self.assertEqual(p2["checked_scenarios"], {"0": ["boundary", "duplicates", "empty"]})
+        self.assertEqual(p2["unchecked_scenarios"], ["sample"])
+        # Round 4 after checking sample: all 4 scenarios verified.
+        p3 = json.loads(model.messages[3][-1]["content"])
+        self.assertEqual(p3["unchecked_scenarios"], [])
+
+    async def test_opt_in_transient_retry_recovers_503_and_skips_400(self):
+        attempts = {"count": 0}
+
+        def transient(request):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                return httpx.Response(503)
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": json.dumps(finished(question="goal", kind="clarify"))}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
+            })
+
+        model = ChatModel("https://example.invalid/v1", "controlled", None, max_retries=2)
+        model._async_client = httpx.AsyncClient(base_url=model.client.base_url,
+                                                transport=httpx.MockTransport(transient))
+        self.addCleanup(model.close)
+        self.addAsyncCleanup(model.aclose)
+        with measure_calls() as calls:
+            result, _, _ = await self.run_coach(model)
+        self.assertEqual(result["mode"], "agent")
+        self.assertEqual(result["metrics"]["finish_reason"], "clarify")
+        self.assertEqual(attempts["count"], 2)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], {"error": "http_error", "http_status": 503})
+        self.assertEqual(calls[1]["total_tokens"], 16)
+
+        bad_attempts = {"count": 0}
+
+        def bad_request(request):
+            bad_attempts["count"] += 1
+            return httpx.Response(400)
+
+        bad_model = ChatModel("https://example.invalid/v1", "controlled", None, max_retries=2)
+        bad_model._async_client = httpx.AsyncClient(base_url=bad_model.client.base_url,
+                                                    transport=httpx.MockTransport(bad_request))
+        self.addCleanup(bad_model.close)
+        self.addAsyncCleanup(bad_model.aclose)
+        result, _, _ = await self.run_coach(bad_model)
+        self.assertEqual(bad_attempts["count"], 1)
+        self.assertEqual(result["metrics"]["finish_reason"], "model_error")
+
 
 if __name__ == "__main__":
     unittest.main()
