@@ -11,9 +11,9 @@ from tutor.check_provider import choose_gemini, probe
 from tutor.provider import ChatModel, measure_calls
 
 
-def tool(name):
+def tool(name, arguments=None):
     return {"tool_calls": [{"id": "call-course", "type": "function",
-                            "function": {"name": name, "arguments": "{}"}}]}
+                            "function": {"name": name, "arguments": json.dumps(arguments if arguments is not None else {})}}]}
 
 
 def action(name, text, sources):
@@ -130,6 +130,71 @@ class TutorTest(unittest.TestCase):
         self.assertEqual(requests[1]["messages"][-1]["role"], "tool")
         self.assertIn(first["text"], [message["content"] for message in requests[2]["messages"]])
         self.assertNotIn("correct_option", str(requests))
+
+    def test_latest_five_turns_and_first_turn_recall_use_distinct_contexts(self):
+        item = Catalog.load(DEFAULT_CATALOG).items[2]
+        prior = [
+            {"message": f"旧问题 {number}", "source": "llm", "action": "show_example",
+             "text": f"旧例子 {number}，联系地址 learner@example.test。"}
+            for number in range(1, 8)
+        ]
+        replies = iter([
+            action("show_example", "回顾旧例子 3。", ["history-turn-3"]),
+            tool("retrieve_tutor_history", {"turn_number": 1}),
+            action("show_example", "回顾旧例子 1。", ["history-turn-1"]),
+        ])
+        requests = []
+
+        def handle(request):
+            requests.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": next(replies)}]})
+
+        model = ChatModel("https://example.invalid/v1", "test", None, transport=httpx.MockTransport(handle))
+        self.addCleanup(model.close)
+        agent = TutorAgent(model)
+        recent = agent.respond(item, "回看第 3 轮的例子。", prior)
+        recalled = agent.respond(item, "回到第一轮的例子。", prior)
+
+        self.assertEqual(recent["trace"], [])
+        self.assertEqual(recent["citations"][0]["id"], "history-turn-3")
+        messages = requests[0]["messages"]
+        self.assertEqual([entry["content"] for entry in messages[2:-1:2]],
+                         [f"旧问题 {number}" for number in range(3, 8)])
+        self.assertEqual(json.loads(messages[1]["content"])["course_context"]["recent_turn_numbers"], [3, 4, 5, 6, 7])
+        self.assertNotIn("tool_choice", requests[0])
+        self.assertNotIn("旧例子 1", str(requests[1]["messages"]))
+        self.assertEqual(requests[1]["tool_choice"]["function"]["name"], "retrieve_tutor_history")
+        observation = requests[2]["messages"][-1]
+        self.assertEqual((observation["role"], observation["tool_call_id"]), ("tool", "call-course"))
+        recalled_turn = json.loads(observation["content"])
+        self.assertEqual(recalled_turn["text"][0]["content"], "旧问题 1")
+        self.assertIn("旧例子 1", recalled_turn["text"][1]["content"])
+        self.assertNotIn("learner@example.test", str(requests))
+        self.assertEqual(recalled["trace"],
+                         [{"tool": "retrieve_tutor_history", "source_id": "history-turn-1", "turn_number": 1}])
+        self.assertEqual(recalled["citations"],
+                         [{"id": "history-turn-1", "title": "本题第 1 轮对话", "turn_number": 1}])
+
+    def test_history_tool_rejects_invalid_or_unrequested_turn(self):
+        item = Catalog.load(DEFAULT_CATALOG).items[2]
+        prior = [{"message": "早期问题", "source": "llm", "text": "早期回答。"}] * 7
+        for args in ({"turn_number": True}, {"turn_number": 1.0}, {"turn_number": "1"},
+                     {"turn_number": 2}, {"turn_number": 1, "decision_id": "another-exercise"}):
+            with self.subTest(args=args):
+                class FakeModel:
+                    def reply(self, messages, tools, timeout, **kwargs):
+                        return tool("retrieve_tutor_history", args)
+
+                agent = TutorAgent(FakeModel())
+                for message in ("请回到第 1 轮。", "之前的例子是哪个？"):
+                    result = agent.respond(item, message, prior)
+                    self.assertEqual(result["fallback_reason"], "invalid_tool_call")
+                    self.assertEqual(result["trace"], [])
+
+        unavailable = TutorAgent(object()).respond(item, "请回到第 9 轮。", prior)
+        self.assertEqual((unavailable["action"], unavailable["fallback_reason"]),
+                         ("ask_clarifying", "history_turn_unavailable"))
+        self.assertIn("7 轮问答", unavailable["text"])
 
     def test_invalid_citation_and_answer_leak_fall_back(self):
         class FakeModel:

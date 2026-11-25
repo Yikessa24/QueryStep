@@ -101,6 +101,37 @@ class PracticeAPITest(unittest.TestCase):
             self.assertEqual(other.get(f"/api/practice/{selected['decision_id']}/replay").status_code, 404)
             self.assertEqual(self.answer(selected["decision_id"], 0, other).status_code, 404)
 
+    def test_history_recall_uses_saved_current_attempt_and_preserves_turn_limit(self):
+        class Model:
+            def reply(self, messages, tools, timeout, *, tool_choice=None):
+                if tool_choice:
+                    return {"tool_calls": [{"id": "recall", "type": "function",
+                        "function": {"name": "retrieve_tutor_history", "arguments": '{"turn_number":1}'}}]}
+                if messages[-1]["role"] == "tool":
+                    return {"content": '{"action":"give_hint","text":"复习第一轮的筛选规则。",'
+                                       '"source_ids":["history-turn-1"]}'}
+                return {"content": '{"action":"ask_clarifying","text":"你想先核对哪个条件？","source_ids":[]}'}
+
+        self.app.state.practice.tutor = TutorAgent(Model())
+        self.client.post("/api/session", json={}).raise_for_status()
+        decision = self.present()["decision_id"]
+        self.assertFalse(self.answer(decision, 1).raise_for_status().json()["correct"])
+        path = f"/api/practice/{decision}/tutor"
+        for number in range(1, 8):
+            self.client.post(path, json={"message": f"测试问题 {number}"}).raise_for_status()
+        with TestClient(create_app(database_url=str(self.app.state.practice.db.engine.url))) as other:
+            other.post("/api/session", json={}).raise_for_status()
+            self.assertEqual(other.post(path, json={"message": "回看第 1 轮"}).status_code, 404)
+
+        recalled = self.client.post(path, json={"message": "回看第 1 轮"}).raise_for_status().json()
+        self.assertEqual(recalled["trace"][0]["turn_number"], 1)
+        self.assertEqual(recalled["citations"][0]["title"], "本题第 1 轮对话")
+        self.assertEqual(self.client.post(path, json={"message": "再讲一点"}).status_code, 409)
+        progress = self.client.get("/api/practice/progress").raise_for_status().json()
+        self.assertEqual(progress["total"], 1)
+        self.assertEqual(len(progress["last"]["turns"]), 8)
+        self.assertEqual(progress["last"]["turns"][-1], recalled)
+
     def test_concurrent_retry_only_advances_history_once(self):
         self.client.post("/api/session", json={})
         with ThreadPoolExecutor(max_workers=2) as pool:

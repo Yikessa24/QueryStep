@@ -102,7 +102,9 @@ QUERYSTEP_COACH_ENABLED=1 QUERYSTEP_DIAGNOSTICS_ENABLED=1 QUERYSTEP_PYTHON="$PWD
 
    > 请用例题工具给一个不同的简短例子，帮我区分 GROUP BY 和 HAVING。
 
-**背后用到的技术**　FastAPI 后端用 HTTPX 调用 `.env` 配置的 Gemini 服务，走兼容 OpenAI 的 `chat/completions` 接口。助教把当前题的最近两轮对话和相关学习笔记带给模型。模型可以请求查课程提示或取已准备的例题，后端校验工具参数、返回结构和引用，失败时提供预置提示。
+5. 想体验同题历史回查，可在独立练习会话里第一轮先请助教举例，再在同一道错题上继续问到第七轮。第八轮发「请回到第 1 轮，复述刚才的例子」。成功后回复下方显示「本题第 1 轮对话」。用 Safari 网页检查器打开「网络」，筛选 `tutor`，在这次请求的「预览」响应里核对 `trace` 中的 `retrieve_tutor_history` 和 `turn_number: 1`。本题一共允许八轮辅导。
+
+**背后用到的技术**　FastAPI 后端用 HTTPX 调用 `.env` 配置的 Gemini 服务，走兼容 OpenAI 的 `chat/completions` 接口。助教默认带入当前题最近五轮问答和相关学习笔记。学生明确指定窗口以外的轮次时，助教按需调用只读工具取回那一轮。后端校验工具参数、返回结构和引用，失败时提供预置提示。
 
 ### 2.7 用错题教练查跨考点证据
 

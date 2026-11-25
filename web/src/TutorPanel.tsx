@@ -21,6 +21,8 @@ export function RichText({ text }: { text: string }) {
 function fallbackLabel(reason?: string | null) {
   if (reason === "llm_timeout") return "助教响应超时，先为你提供课程提示。你可以重新提问。";
   if (reason === "llm_busy") return "助教暂时繁忙，先为你提供课程提示。";
+  if (reason === "history_turn_unavailable") return "可回查的范围是本题已保存的问答。";
+  if (reason === "history_lookup_required" || reason === "missing_history_reference") return "本次未能引用指定轮次，先为你提供课程提示。";
   return "本次使用预置课程提示，并非实时生成的回答。";
 }
 

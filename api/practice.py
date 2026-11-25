@@ -12,6 +12,7 @@ from api.catalog import Catalog
 from api.db import Attempt, Database, Decision, Learner, TutorTurn
 from api.recommend import Recommender
 from course_content.lessons import reviewed_hint
+from tutor.memory import MAX_TUTOR_TURNS
 
 
 class Practice:
@@ -204,7 +205,7 @@ class Practice:
         with self.db.transaction() as db:
             attempt = self._tutoring_attempt(db, learner_id, decision_id)
             prior = self._turns(db, decision_id)
-        if len(prior) >= 8:
+        if len(prior) >= MAX_TUTOR_TURNS:
             raise HTTPException(409, "已达到本题的辅导轮数，请继续练习。")
         item = self.catalog.items[attempt.item_id]
         started = monotonic()

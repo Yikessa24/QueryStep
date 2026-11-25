@@ -63,10 +63,11 @@ Day / 小节：
 
 按以下顺序带读后端：
 
-1. [API 入口](../api/main.py#L269) 处理 `POST /api/practice/{decision_id}/tutor`，接收 `message` 和当前学习者信息。进入 [Practice.tutor_turn](../api/practice.py#L203)，看题目从哪来、已有对话怎么读、相关笔记怎么找。
-2. [TutorAgent._respond](../tutor/agent.py#L88) 构造题目主题等上下文，组装系统提示、近期对话和当前消息。找到 `prior[-2:]`、最后一条用户消息和 `TOOLS`。用 [ChatModel.reply](../tutor/provider.py#L64) 看 JSON 请求体怎样加入工具定义并发往 `chat/completions`。
-3. 模型返回 `tool_calls` 时，由后端校验工具名、调用 ID 和参数。沿 [工具分发](../tutor/agent.py#L60) 进入 [课程例题字典](../course_content/lessons.py#L21)，对照 `example-aggregate`。这里是普通助教的本地函数调用。
-4. 看 [工具结果回传](../tutor/agent.py#L141) 怎样记录 `trace`，并用 `role: "tool"` 与 `tool_call_id` 把结果送回 Gemini。跟到结构化回复和引用校验、备用提示、`TutorTurn` 入库和页面渲染。
+1. [API 入口](../api/main.py#L269) 处理 `POST /api/practice/{decision_id}/tutor`，接收 `message` 和当前学习者信息。进入 [Practice.tutor_turn](../api/practice.py#L204)，看题目从哪来、已有对话怎么读、相关笔记怎么找。
+2. [TutorAgent._respond](../tutor/agent.py) 构造题目主题等上下文，组装系统提示、近期对话和当前消息。找到 [recent_turns](../tutor/memory.py) 的五轮窗口、最后一条用户消息和 `TOOLS`。用 [ChatModel.reply](../tutor/provider.py#L64) 看 JSON 请求体怎样加入工具定义并发往 `chat/completions`。
+3. 模型返回 `tool_calls` 时，由后端校验工具名、调用 ID 和参数。沿 [课程工具分发](../tutor/agent.py#L72) 进入 [课程例题字典](../course_content/lessons.py#L21)，对照 `example-aggregate`。这里是普通助教的本地函数调用。
+4. 看 [工具结果回传](../tutor/agent.py) 怎样记录 `trace`，并用 `role: "tool"` 与 `tool_call_id` 把结果送回 Gemini。跟到结构化回复和引用校验、备用提示、`TutorTurn` 入库和页面渲染。
+5. 按体验手册 §2.6 验证「第八轮回看第一轮」。从 `referenced_turn` 跟到 `retrieve_tutor_history`，确认后端怎样限定到当前学习者和题目、窗口内何时可以直接引用、窗口外如何执行回查。用页面的「本题第 1 轮对话」和 API 响应验证。
 
 **验证与追问。** 学会用 `trace` 确认执行，用 `citations` 确认最终引用，用 `source` 和 `fallback_reason` 判断回复状态。先让学习者能画出「浏览器一次请求，后端两次调用模型」。再问他 `tools`、`tool_calls` 与 `role: "tool"` 分别在谁发给谁的消息中出现。最后看手册 §6 的探针怎样区分模型联通、函数调用和结构化输出。
 

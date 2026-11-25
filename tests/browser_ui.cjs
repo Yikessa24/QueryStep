@@ -46,7 +46,9 @@ async function fixtures(context) {
       if (body.message === "网络失败") return reply({ detail: "辅导服务暂不可用" }, 503);
       const turn = { message: body.message, text: body.message === "超时" ? "先确定每组有哪些行。" : "先观察 `GROUP BY` 的结果，再验证 HAVING。<img src=x onerror=alert(1)>",
         source: body.message === "超时" ? "template" : "llm", fallback_reason: body.message === "超时" ? "llm_timeout" : null,
-        action: "give_hint", citations: [{ id: "rule", title: "课程规则" }], memory_ids: ["note-1"] };
+        action: "give_hint", citations: body.message === "回看第 1 轮"
+          ? [{ id: "history-turn-1", title: "本题第 1 轮对话", turn_number: 1 }]
+          : [{ id: "rule", title: "课程规则" }], memory_ids: ["note-1"] };
       state.history.at(-1).turns.push(turn);
       return reply(turn);
     }
@@ -150,6 +152,9 @@ async function waitFor(check, message) {
     await waitFor(() => state.release !== null, "Fallback request was not sent"); state.release(); state.release = null;
     await page.getByText("助教响应超时，先为你提供课程提示。你可以重新提问。", { exact: true }).waitFor();
     assert.equal(await textbox.inputValue(), "", "A completed fallback reply must leave the composer empty");
+    await textbox.fill("回看第 1 轮"); await textbox.press("Enter");
+    await waitFor(() => state.release !== null, "History request was not sent"); state.release(); state.release = null;
+    await page.getByText("本题第 1 轮对话", { exact: true }).waitFor();
     const failedDraft = "  网络失败  ";
     await textbox.fill(failedDraft); await textbox.press("Enter");
     await page.getByText("助教正在思考…", { exact: true }).waitFor();
