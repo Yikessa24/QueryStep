@@ -462,3 +462,227 @@ querystep_pgdata
 ```
 
 </details>
+
+## 2026-11-26 修复复测（afa17cc）
+
+**总体结果为 PASS。** 以 `git pull --ff-only origin main` 快进到 `afa17cc4d89b20113b236f815dbcdbe12f5f9320`，使用本地完整配置和产物重新构建并启动。Compose 配置校验退出 `0`，`docker compose up --build -d` 耗时 `00:03:10.634`。DB 和 API 达到 `healthy`，Web 为 `Up`。
+
+| 验收项 | 结果 | 实测证据 |
+| --- | --- | --- |
+| `/healthz` | **PASS** | HTTP `200`，`epikt_ready`、`tutor_ready`、`coach_ready`、`sql_workbench_ready`、`sql_coach_ready`、`diagnostics_ready` 和 `mcp_ready` 全为 `true`。 |
+| 完整配置下运行模式 A 脚本 | **PASS** | 6 项全部通过，退出 `0`。`COUNT(*)` 反例返回 `mismatch` 且含反例，`ATTACH` 返回 `rejected`。这两项均未出现 `memory_limit_exceeded`。 |
+| Nginx 与容器内自检 | **PASS** | `nginx -t` 和 `python -m sql_lab.check` 均退出 `0`，检查点卷存在 SQLite 文件及 WAL。 |
+| 模式 B EpiKT 推荐联动 | **PASS** | 冷启动题号依次为 `57`、`62`、`63`，提交下标 `[1, 0, 0]`。第 4 题为 `75` 且 `source=epikt`。工作台返回 `source=epikt`、`guidance_tier=foundation`、`mean_predicted_probability=0.6033` 和 4 个 `priority_scenarios`。 |
+| 模式 B 诊断 SSE | **PASS** | 第 75 题提交下标 `0` 判错，诊断返回 HTTP `202`。`curl -iN` 经 Nginx 得到 HTTP `200`、`content-type: text/event-stream; charset=utf-8` 和 `x-accel-buffering: no`。7 条事件连续编号，首末到达时间相差 `0.375s`，随后收到 `event: settled`。诊断最终为 `completed`。 |
+| §1.5 `COUNT(*)` WorkbenchCoach | **PASS** | `status=completed`、`mode=agent`、`check.status=mismatch` 且返回反例。调用模型 2 次，耗时 `12.133s`。 |
+| §1.5 概念问答与 Hybrid RAG | **PASS** | `status=completed`、`mode=agent`，两条 `retrieval_version` 事件的 `mode` 均为 `hybrid`。调用模型 3 次，耗时 `15.496s`。 |
+
+<details>
+<summary>脱敏命令输出与事件摘要</summary>
+
+### 快进与构建摘要
+
+```text
+From https://github.com/Yikessa24/QueryStep
+ * branch            main       -> FETCH_HEAD
+   ff6a344..afa17cc  main       -> origin/main
+Updating ff6a344..afa17cc
+Fast-forward
+ deploy/DOCKER_SMOKE_TEST.md |  2 +-
+ deploy/nginx.conf           |  1 +
+ sql_lab/query_worker.py     | 18 +++++++++++++++---
+ tests/test_deploy_config.py |  1 +
+ tests/test_sql_workbench.py | 22 ++++++++++++++++++++++
+ 5 files changed, 40 insertions(+), 4 deletions(-)
+afa17cc4d89b20113b236f815dbcdbe12f5f9320
+afa17cc4d89b20113b236f815dbcdbe12f5f9320
+afa17cc Fix Linux fork-inherited ru_maxrss OOM in SQL worker and expose Nginx SSE buffering header
+## main...origin/main
+afa17cc Fix Linux fork-inherited ru_maxrss OOM in SQL worker and expose Nginx SSE buffering header
+ deploy/DOCKER_SMOKE_TEST.md |  2 +-
+ deploy/nginx.conf           |  1 +
+ sql_lab/query_worker.py     | 18 +++++++++++++++---
+ tests/test_deploy_config.py |  1 +
+ tests/test_sql_workbench.py | 22 ++++++++++++++++++++++
+ 5 files changed, 40 insertions(+), 4 deletions(-)
+
+docker compose config --quiet exit=0
+ Image querystep-api Built
+ Image querystep-web Built
+ Network querystep_default Creating
+ Network querystep_default Created
+ Volume querystep_pgdata Creating
+ Volume querystep_pgdata Created
+ Volume querystep_api_runtime Creating
+ Volume querystep_api_runtime Created
+ Container querystep-db-1 Creating
+ Container querystep-db-1 Created
+ Container querystep-api-1 Creating
+ Container querystep-api-1 Created
+ Container querystep-web-1 Creating
+ Container querystep-web-1 Created
+ Container querystep-db-1 Starting
+ Container querystep-db-1 Started
+ Container querystep-db-1 Waiting
+ Container querystep-db-1 Healthy
+ Container querystep-api-1 Starting
+ Container querystep-api-1 Started
+ Container querystep-api-1 Waiting
+ Container querystep-api-1 Healthy
+ Container querystep-web-1 Starting
+ Container querystep-web-1 Started
+docker compose up --build -d exit=0 elapsed=00:03:10.634
+NAME              IMAGE           COMMAND                  SERVICE   CREATED          STATUS                    PORTS
+querystep-api-1   querystep-api   "python -m uvicorn a…"   api       17 seconds ago   Up 11 seconds (healthy)   8000/tcp
+querystep-db-1    postgres:16     "docker-entrypoint.s…"   db        18 seconds ago   Up 16 seconds (healthy)   5432/tcp
+querystep-web-1   querystep-web   "/docker-entrypoint.…"   web       17 seconds ago   Up Less than a second     127.0.0.1:8080->80/tcp
+CONTAINER           REPOSITORY          TAG                 PLATFORM            IMAGE ID            SIZE                CREATED
+querystep-api-1     querystep-api       latest              linux/amd64         c944ea6399ce        498MB               59 seconds ago
+querystep-db-1      postgres            16                  linux/amd64         07abc3f43c93        166MB               2 days ago
+querystep-web-1     querystep-web       latest              linux/amd64         53b13b0b0cfa        28.9MB              3 minutes ago
+```
+
+### 就绪检查
+
+```text
+GET /healthz HTTP 200: {"status":"ok","service":"querystep","catalog_version":"dbe-v1-c5271713de70-demo","epikt_ready":true,"tutor_ready":true,"coach_ready":true,"sql_workbench_ready":true,"sql_workbench_reason":null,"sql_coach_ready":true,"sql_coach_reason":null,"tutor_status":"configured","diagnostics_ready":true,"mcp_ready":true,"diagnostics_reason":null}
+Readiness: {"epikt_ready":true,"tutor_ready":true,"coach_ready":true,"sql_workbench_ready":true,"sql_coach_ready":true,"diagnostics_ready":true,"mcp_ready":true}
+Verdict: {"case":"health","pass":true}
+```
+
+### 模式 A 原脚本、Nginx 和 MCP 自检
+
+```text
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+nginx -t exit=0
+1. Frontend index.html: OK
+2. Session cookie created: OK
+3. /api/sql/tasks: OK (10 tasks, coach_available=True, rec={'available': False, 'source': 'none', 'reason': 'no_epikt_or_history'})
+4. SQL sandbox counterexample (mismatch): OK
+5. SQL sandbox security rejection (ATTACH): OK
+6. Formal practice + PostgreSQL persistence: OK
+ALL MODE-A API SMOKE CHECKS PASSED!
+Mode A API script exit=0
+total 76
+drwxr-xr-x 2 root root  4096 Nov 26 07:32 .
+drwxr-xr-x 1 root root  4096 Nov 26 07:32 ..
+-rw------- 1 root root  4096 Nov 26 07:32 diagnosis-checkpoints.sqlite3
+-rw------- 1 root root 32768 Nov 26 07:32 diagnosis-checkpoints.sqlite3-shm
+-rw------- 1 root root 24752 Nov 26 07:32 diagnosis-checkpoints.sqlite3-wal
+runtime listing exit=0
+{
+  "fixture_id": "grouping_having@1",
+  "course_sources": [
+    "aggregate-having",
+    "aggregate-group-by"
+  ],
+  "group_counts": [
+    [
+      "A",
+      4
+    ],
+    [
+      "B",
+      2
+    ],
+    [
+      "C",
+      2
+    ],
+    [
+      "D",
+      1
+    ]
+  ],
+  "having_gt": [
+    [
+      "A",
+      4
+    ],
+    [
+      "B",
+      2
+    ],
+    [
+      "C",
+      2
+    ]
+  ],
+  "having_gte": [
+    [
+      "A",
+      4
+    ],
+    [
+      "B",
+      2
+    ],
+    [
+      "C",
+      2
+    ],
+    [
+      "D",
+      1
+    ]
+  ],
+  "comparison": {
+    "before_id": "00c5d6c02a0b446f9943853322280a2b",
+    "after_id": "c69ccd0f827c40f9acae23b9ba176a67",
+    "comparison_id": "028bc35897904694a946472283724c0f",
+    "fixture_id": "grouping_having@1",
+    "before_row_count": 4,
+    "after_row_count": 3,
+    "removed_keys": [
+      "D"
+    ],
+    "added_keys": [],
+    "changed_keys": []
+  }
+}
+sql_lab.check exit=0
+```
+
+### 模式 B EpiKT 和 SSE
+
+```text
+Cold start answer: {"position":1,"item":57,"source":"rule","option":1,"correct":false}
+Cold start answer: {"position":2,"item":62,"source":"rule","option":0,"correct":false}
+Cold start answer: {"position":3,"item":63,"source":"rule","option":0,"correct":true}
+Fourth practice item: {"id":75,"source":"epikt","reason":"consolidate"}
+Workbench recommendation: {"available":true,"source":"epikt","task_id":"filter_paid","task_title":"筛选已付款订单","topic":"where","guidance_tier":"foundation","scaffolding_level":"step_by_step","priority_scenarios":["sample","boundary","empty","duplicates"],"mean_predicted_probability":0.6033,"candidate_count":2,"model_version":"c31ae1ebdda8","snapshot_history_version":3,"current_history_version":3,"reason":"lowest_calibrated_topic_probability"}
+Fourth answer: {"item":75,"option":0,"correct":false}
+Diagnosis accepted: {"http":202,"status":"queued"}
+curl -iN response headers: {"status":"HTTP/1.1 200 OK","content-type":"text/event-stream; charset=utf-8","x-accel-buffering":"no"}
+SSE: {"at_s":0.036,"seq":1,"type":"run_started","status":"running"}
+SSE: {"at_s":0.326,"seq":2,"type":"branch_started","status":"running"}
+SSE: {"at_s":0.326,"seq":3,"type":"branch_started","status":"running"}
+SSE: {"at_s":0.326,"seq":4,"type":"branch_finished","status":"needs_input"}
+SSE: {"at_s":0.341,"seq":5,"type":"branch_finished","status":"ok"}
+SSE: {"at_s":0.411,"seq":6,"type":"evidence_verified","mode":"clarify"}
+SSE: {"at_s":0.411,"seq":7,"type":"run_finished","status":"completed"}
+SSE: {"at_s":0.411,"line":"event: settled"}
+SSE verdict: {"curl_exit":0,"events":7,"arrival_span_s":0.375,"http_200":true,"content_type":true,"x_accel_buffering_no":true,"seven_sequential_events":true,"progressive_arrival":true,"settled":true}
+Diagnosis final: {"status":"completed","mode":"clarify"}
+Verdict: {"case":"mode-b","pass":true}
+```
+
+### §1.5 WorkbenchCoach 和 Hybrid RAG
+
+```text
+WorkbenchCoach result: {"case":"coach","http_submit":202,"status":"completed","mode":"agent","check_status":"mismatch","counterexample":true,"check_error":null,"elapsed_s":12.133,"metrics":{"finish_reason":"answer","model_calls":2,"tool_calls":1,"provider_calls_this_attempt":2,"usage_this_attempt":{"prompt_tokens":3456,"completion_tokens":270,"total_tokens":3726}},"retrieval_version":[],"trace":[{"seq":1,"type":"plan","tool":null},{"seq":2,"type":"tool_completed","tool":"check_student_sql"},{"seq":3,"type":"observation","tool":null},{"seq":4,"type":"plan","tool":null},{"seq":5,"type":"observation","tool":null}]}
+Verdict: {"case":"coach","pass":true}
+
+WorkbenchCoach result: {"case":"concept","http_submit":202,"status":"completed","mode":"agent","check_status":null,"counterexample":false,"check_error":null,"elapsed_s":15.496,"metrics":{"finish_reason":"answer","model_calls":3,"tool_calls":2,"provider_calls_this_attempt":3,"usage_this_attempt":{"prompt_tokens":5687,"completion_tokens":395,"total_tokens":6082}},"retrieval_version":[{"mode":"hybrid","corpus":"2a329b4f082cd0af1a6b3105fb85d9a0903e39a0860436c5e601346b362b66a0"},{"mode":"hybrid","corpus":"2a329b4f082cd0af1a6b3105fb85d9a0903e39a0860436c5e601346b362b66a0"}],"trace":[{"seq":1,"type":"plan","tool":null},{"seq":2,"type":"retrieval_version","tool":"search_course"},{"seq":3,"type":"tool_completed","tool":"search_course"},{"seq":4,"type":"observation","tool":null},{"seq":5,"type":"plan","tool":null},{"seq":6,"type":"retrieval_version","tool":"search_course"},{"seq":7,"type":"tool_completed","tool":"search_course"},{"seq":8,"type":"observation","tool":null},{"seq":9,"type":"plan","tool":null},{"seq":10,"type":"observation","tool":null}]}
+Verdict: {"case":"concept","pass":true}
+```
+
+### 脱敏日志
+
+```text
+docker compose logs --tail=80 api web exit=0; matching error lines=0
+## main...origin/main
+```
+
+</details>
