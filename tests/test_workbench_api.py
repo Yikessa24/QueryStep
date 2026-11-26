@@ -287,6 +287,54 @@ class WorkbenchAPITest(unittest.TestCase):
                 self.assertEqual(status["status"], "completed")
         self.assertEqual(received, [{"completed_tools": ["sample"], "model_calls": 1}])
 
+    def test_epikt_recommendation_targets_weakest_topic_and_populates_guidance(self):
+        class DifferentiatedScorer:
+            version = "epikt-synergy-test"
+            def supports(self, item):
+                return True
+            def score(self, history, items):
+                # Make where distinctly weakest (< 0.65 -> foundation), distinct mid, select high.
+                by_topic = {"where": 0.42, "distinct": 0.74, "select": 0.91, "conditions": 0.88}
+                return {item.id: by_topic.get(item.topic, 0.85) for item in items}
+
+        self.app.state.practice.recommender = Recommender(DifferentiatedScorer())
+        # Before history/EpiKT snapshot: recommendation unavailable.
+        initial = self.client.get("/api/sql/tasks").raise_for_status().json()["recommendation"]
+        self.assertFalse(initial["available"])
+
+        for index in range(3):
+            selected = self.client.post("/api/practice/next", json={}).raise_for_status().json()
+            self.client.post(f'/api/practice/{selected["decision_id"]}/answer', json={
+                "option": 0, "idempotency_key": f"synergy-{index:03d}",
+            }).raise_for_status()
+        selected = self.client.post("/api/practice/next", json={}).raise_for_status().json()
+        self.assertEqual(selected["source"], "epikt")
+
+        rec = self.client.get("/api/sql/tasks").raise_for_status().json()["recommendation"]
+        self.assertTrue(rec["available"])
+        self.assertEqual(rec["source"], "epikt")
+        self.assertEqual(rec["topic"], "where")
+        self.assertEqual(rec["guidance_tier"], "foundation")
+        self.assertAlmostEqual(rec["mean_predicted_probability"], 0.42, places=3)
+        self.assertEqual(rec["priority_scenarios"], ["sample", "boundary", "empty", "duplicates"])
+        self.assertIn(rec["task_id"], {t["id"] for t in self.tasks if t["topic"] == "where"})
+
+        # Submitting a run on that recommended where task attaches structured EpiKT guidance.
+        rec_path = f"/api/sql/tasks/{rec['task_id']}"
+        rec_task = self.client.get(rec_path).raise_for_status().json()["task"]
+        table = rec_task["tables"][0]
+        sql = f'SELECT "{table["columns"][0]}" FROM "{table["name"]}"'
+        run = self.client.post(rec_path + "/runs", json={
+            "sql": sql, "action": "run", "message": "验证筛选边界", "idempotency_key": "synergy-run-0001",
+        }).raise_for_status().json()
+        self.settled(run["id"])
+        with self.app.state.practice.db.transaction() as db:
+            ctx = db.get(SQLRun, run["id"]).context
+            self.assertIn("guidance", ctx)
+            self.assertEqual(ctx["guidance"]["source"], "epikt")
+            self.assertEqual(ctx["guidance"]["recommended_context_use"], "foundation")
+            self.assertAlmostEqual(ctx["guidance"]["topic_mean_predicted_probability"], 0.42, places=3)
+
 
 if __name__ == "__main__":
     unittest.main()

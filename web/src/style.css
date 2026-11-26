@@ -583,6 +583,9 @@ details:not(.lab-disclosure) { margin-top: 13px; }
   .sql-wb-history-item small { margin-left: 5px; }
 }
 
+.sql-wb-recommendation { margin: 14px 0; padding: 12px 14px; border: 1px solid #d7e4c6; border-radius: 10px; background: #f6faef; display: grid; gap: 6px; }
+.sql-wb-recommendation strong { font-size: 13px; color: #3d522a; }
+.sql-wb-recommendation button { justify-self: start; font-size: 12px; padding: 6px 11px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

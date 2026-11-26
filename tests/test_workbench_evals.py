@@ -690,5 +690,27 @@ class TrustedEngineTest(unittest.TestCase):
         self.assertFalse(result["labels_changed"])
 
 
+class RealEpiktSnapshotTest(unittest.TestCase):
+    def test_real_epikt_snapshot_builder_runs_actual_calibrated_inference(self):
+        from evals.workbench import build_epikt_snapshots
+
+        root = Path(__file__).resolve().parents[1]
+        run_dir = root / "artifacts/epikt-dbe-fold0"
+        catalog = root / "artifacts/dbe-sql-approved.json"
+        data_dir = root / "data/processed/dbe_kt22_sql_core"
+        if not (run_dir.is_dir() and catalog.is_file() and (data_dir / "test.csv").is_file()):
+            self.skipTest("Trained EpiKT fold-0 artifacts or DBE-KT22 test split not present")
+        test_cases = select_cases("test")
+        snapshots = build_epikt_snapshots(run_dir, catalog, test_cases, data_dir=data_dir)
+        self.assertEqual(set(snapshots), set(TEST_TASKS))
+        for task_id, snap in snapshots.items():
+            self.assertTrue(snap["provenance"]["actual_epikt_inference"], task_id)
+            self.assertTrue(snap["provenance"]["actual_learner_data"], task_id)
+            self.assertTrue(snap["epikt"]["available"], task_id)
+            self.assertGreaterEqual(len(snap["epikt"]["candidates"]), 1, task_id)
+            self.assertIn("guidance", snap, task_id)
+            self.assertIn(snap["guidance"]["recommended_context_use"], {"foundation", "boundary", "transfer"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -891,6 +891,42 @@ class WorkbenchCoachTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bad_attempts["count"], 1)
         self.assertEqual(result["metrics"]["finish_reason"], "model_error")
 
+    async def test_protocol_v3_and_v4_ablation_modes_and_epikt_guidance_metrics(self):
+        v3_model = Model(planned(action("check_student_sql", scenarios=["sample"])), finished("e1"))
+        v3_record = Recorder()
+        v3_result = await WorkbenchCoach(v3_model, "controlled", budget=20, protocol="v3").run(
+            TASK, SQL, MESSAGE, {}, tool=Tools(), state=None,
+            checkpoint=v3_record.checkpoint, publish=v3_record.publish,
+        )
+        self.assertEqual(v3_result["metrics"]["prompt_version"], "workbench-plan-v3")
+        self.assertIn("JSON schema:", v3_model.messages[0][0]["content"])
+        v3_payload = json.loads(v3_model.messages[0][-1]["content"])
+        self.assertNotIn("checked_scenarios", v3_payload)
+        self.assertNotIn("unchecked_scenarios", v3_payload)
+
+        epikt_context = {
+            "epikt": {"available": True, "candidates": [{"item_id": 81, "topic": "join", "predicted_correct_probability": 0.91}]},
+            "guidance": {
+                "source": "epikt", "topic": "join", "topic_mean_predicted_probability": 0.91,
+                "candidate_count": 1, "recommended_context_use": "transfer",
+                "scaffolding_level": "concise_transfer",
+                "priority_scenarios": ["boundary", "empty", "duplicates", "sample"],
+            },
+        }
+        v4_model = Model(
+            planned(action("check_student_sql", scenarios=["sample", "boundary", "empty", "duplicates"])),
+            finished("e1", context_use="transfer"),
+        )
+        v4_result, _, _ = await self.run_coach(v4_model, context=epikt_context)
+        self.assertEqual(v4_result["metrics"]["prompt_version"], "workbench-plan-v4")
+        self.assertLess(len(v4_model.messages[0][0]["content"].encode()), len(v3_model.messages[0][0]["content"].encode()))
+        self.assertEqual(v4_result["metrics"]["context_use"], "transfer")
+        self.assertTrue(v4_result["metrics"]["epikt_guidance_applied"])
+        self.assertEqual(v4_result["metrics"]["guidance_tier"], "transfer")
+        self.assertIn("91.0%", v4_result["text"])
+        self.assertIn("迁移", v4_result["text"])
+        self.assertIn("改变", v4_result["question"])
+
 
 if __name__ == "__main__":
     unittest.main()

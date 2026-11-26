@@ -84,6 +84,7 @@ function App() {
   const [workbench, setWorkbench] = useState<"practice" | "sql">("practice");
   const [sqlVisited, setSqlVisited] = useState(false);
   const [sqlSessionRevision, setSqlSessionRevision] = useState(0);
+  const [preferredSqlTopic, setPreferredSqlTopic] = useState<string | null>(null);
   const sessionReady = useRef(false);
   const sessionRequest = useRef<Promise<void> | null>(null);
   const [currentPractice, setPractice] = useState<Presentation | null>(null);
@@ -155,8 +156,11 @@ function App() {
     return () => document.removeEventListener("keydown", choose);
   }, [practice, feedback, busy, review, mobilePanel, dialog, workbench]);
 
-  function showWorkbench(next: "practice" | "sql") {
-    if (next === "sql") setSqlVisited(true);
+  function showWorkbench(next: "practice" | "sql", topicHint?: string | null) {
+    if (next === "sql") {
+      setSqlVisited(true);
+      if (topicHint !== undefined) setPreferredSqlTopic(topicHint);
+    }
     setWorkbench(next); setMobilePanel("practice");
   }
   async function ensureSQLSession() {
@@ -281,7 +285,7 @@ function App() {
             </form>
             {feedback && <div className={`answer-feedback ${feedback.correct ? "is-correct" : "is-incorrect"}`} role="status"><span className="feedback-icon"><Icon name={feedback.correct ? "check" : "help"} size={19} /></span><div><strong>{feedback.correct ? "回答正确，继续保持" : "还差一步，一起理清思路"}</strong><p>{feedback.correct ? "这道题已计入学习记录，可以继续下一题。" : feedback.template_hint ?? "回答有误，可以向右侧助教提问，或换一组数据再练习。"}</p></div></div>}
           </section>
-          {feedback && <div className="practice-action-bar"><div>{wrong && !review && <button className="secondary" onClick={openTutor}><Icon name="chat" size={17} />问问助教</button>}<button className="text-button" disabled={busy} onClick={() => perform(async () => { setReplay(replay ? null : await api<Replay>(`/api/practice/${practice.decision_id}/replay`)); })}><Icon name="chart" size={16} />{replay ? "收起选题记录" : "查看选题记录"}</button></div>{!review && <button disabled={busy} onClick={() => perform(nextItem)}>{pendingRequest === "practice" ? "正在选题…" : "下一题"}<Icon name="arrow" size={18} /></button>}</div>}
+          {feedback && <div className="practice-action-bar"><div>{wrong && !review && <button className="secondary" onClick={openTutor}><Icon name="chat" size={17} />问问助教</button>}{wrong && !review && <button className="secondary" onClick={() => showWorkbench("sql", practice.item.topic)}><Icon name="grid" size={16} />去 SQL 实作验证</button>}<button className="text-button" disabled={busy} onClick={() => perform(async () => { setReplay(replay ? null : await api<Replay>(`/api/practice/${practice.decision_id}/replay`)); })}><Icon name="chart" size={16} />{replay ? "收起选题记录" : "查看选题记录"}</button></div>{!review && <button disabled={busy} onClick={() => perform(nextItem)}>{pendingRequest === "practice" ? "正在选题…" : "下一题"}<Icon name="arrow" size={18} /></button>}</div>}
           {replay && <section className="replay" aria-label="选题记录"><h3>这道题是如何选出的？</h3><p>{replay.source === "epikt" && typeof replay.comparison.rule_item_id === "number" && (replay.chosen_item_id === replay.comparison.rule_item_id ? "EpiKT 与规则选了同一道题。" : "EpiKT 与规则选了不同的题。")}{`本轮实际题号 ${replay.chosen_item_id}。`}{replay.comparison.rule_item_id === null ? "规则对照未选题。" : replay.comparison.rule_item_id !== undefined && `规则对照题号 ${replay.comparison.rule_item_id}。`}{fallbackReason[practice.reason]}</p>{replay.comparison.model_version && <details><summary>模型版本</summary><code>{replay.comparison.model_version}</code></details>}</section>}
           {wrong && <div className="practice-extensions">
             <TransferExercise key={`transfer-${practice.decision_id}`} decisionId={practice.decision_id} request={api} readOnly={!!review} />
@@ -297,10 +301,10 @@ function App() {
       <div className="assistant-tabs" role="tablist" aria-label="辅导方式"><button id="tutor-tab" role="tab" aria-controls="tutor-pane" aria-selected={assistantTab === "tutor"} tabIndex={assistantTab === "tutor" ? 0 : -1} onClick={() => setAssistantTab("tutor")} onKeyDown={(event) => { if (event.key === "ArrowRight") { setAssistantTab("coach"); document.getElementById("coach-tab")?.focus(); } }}>对话辅导</button><button id="coach-tab" role="tab" aria-controls="coach-pane" aria-selected={assistantTab === "coach"} tabIndex={assistantTab === "coach" ? 0 : -1} onClick={() => setAssistantTab("coach")} onKeyDown={(event) => { if (event.key === "ArrowLeft") { setAssistantTab("tutor"); document.getElementById("tutor-tab")?.focus(); } }}>错题教练<span>实验验证</span></button></div>
       {practice && <div className="assistant-context"><span>当前{review ? "回看" : "题目"}</span><strong>{practice.item.title} · {topic}</strong>{review && <span className="subtle-badge">只读</span>}</div>}
       <div className="assistant-pane" id="tutor-pane" role="tabpanel" aria-labelledby="tutor-tab" hidden={assistantTab !== "tutor"}><TutorPanel turns={turns} message={message} pendingMessage={pendingMessage} pending={tutorPending} busy={busy} enabled={wrong && !review} readOnly={!!review} hasQuestion={!!practice} correct={feedback?.correct === true} error={tutorError} focusVersion={focusVersion} decisionId={practice?.decision_id} onMessage={setMessage} onSubmit={ask} /></div>
-      <div className="assistant-pane" id="coach-pane" role="tabpanel" aria-labelledby="coach-tab" hidden={assistantTab !== "coach"}>{practice && wrong ? <CoachPanel key={practice.decision_id} decisionId={practice.decision_id} request={api} readOnly={!!review} /> : <div className="assistant-welcome coach-introduction"><div className="empty-icon"><Icon name="spark" size={28} /></div><h2>用证据，拆解一个疑问</h2><p>教练会查课程、运行 SQL，并根据结果决定下一步验证。</p><div className="coach-steps"><span>查找依据</span><Icon name="chevron" size={13} /><span>对照实验</span><Icon name="chevron" size={13} /><span>梳理结论</span></div><p className="helper-text">目前支持部分 HAVING 与 LEFT JOIN 错题；提交对应题目后可用，其他错题可使用对话辅导。</p></div>}</div>
+      <div className="assistant-pane" id="coach-pane" role="tabpanel" aria-labelledby="coach-tab" hidden={assistantTab !== "coach"}>{practice && wrong && experimentsAvailable ? <CoachPanel key={practice.decision_id} decisionId={practice.decision_id} request={api} readOnly={!!review} /> : <div className="assistant-welcome coach-introduction"><div className="empty-icon"><Icon name="spark" size={28} /></div><h2>用证据，拆解一个疑问</h2><p>旧版错题教练仅保留用于 HAVING 与 LEFT JOIN 示例题；全主题自由写 SQL 与沙箱反例教练已收拢至「SQL 实作」工作台。</p><div className="coach-steps"><span>查找依据</span><Icon name="chevron" size={13} /><span>对照实验</span><Icon name="chevron" size={13} /><span>梳理结论</span></div><button className="secondary" onClick={() => showWorkbench("sql", practice?.item.topic ?? null)}>前往 SQL 实作工作台</button></div>}</div>
     </aside>
 
-    {sqlVisited && <SQLWorkbench key={sqlSessionRevision} active={workbench === "sql"} request={api} ensureSession={ensureSQLSession} onPractice={() => setMobilePanel("practice")} onAssistant={() => setMobilePanel("assistant")} />}
+    {sqlVisited && <SQLWorkbench key={sqlSessionRevision} active={workbench === "sql"} preferredTopic={preferredSqlTopic} request={api} ensureSession={ensureSQLSession} onPractice={() => setMobilePanel("practice")} onAssistant={() => setMobilePanel("assistant")} />}
 
     <nav className="mobile-switch" aria-label="切换学习面板"><button className={mobilePanel === "practice" ? "active" : ""} onClick={() => setMobilePanel("practice")}><Icon name="grid" size={19} />练习</button><button className={mobilePanel === "assistant" ? "active" : ""} onClick={() => setMobilePanel("assistant")}><Icon name="chat" size={19} />助教{tutorPending && <span className="status-dot" />}</button></nav>
 

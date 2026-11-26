@@ -11,6 +11,7 @@ import asyncio
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import copy
+import csv
 from dataclasses import asdict
 from functools import lru_cache
 from hashlib import sha256
@@ -20,7 +21,7 @@ import os
 from pathlib import Path
 import random
 import re
-from statistics import median, quantiles
+from statistics import mean, median, quantiles
 from time import monotonic
 from uuid import uuid4
 
@@ -34,6 +35,7 @@ from tutor.provider import ChatModel, measure_calls
 
 
 ARMS = ("direct", "rag", "agent", "agent_without_context")
+COACH_PROTOCOLS = ("v3", "v4")
 REPORT_VERSION = "workbench-eval-v1"
 PROMPT_VERSION = "workbench-baseline-v1"
 SYNTHETIC_SNAPSHOT = {
@@ -422,8 +424,117 @@ def outcome_flags(result, *, failure=None, audit=()):
     return {"fallback_reason": fallback, "timeout": bool(timeouts), "timeout_reasons": sorted(timeouts)}
 
 
+def build_epikt_snapshots(run_dir: Path, catalog_path: Path, cases, *, data_dir: Path | None = None,
+                          allow_smoke: bool = False) -> dict[str, dict]:
+    """Build production-shaped learning contexts using real calibrated EpiKT inference on held-out learners."""
+    from api.catalog import Catalog
+    from api.recommend import ACTION, CalibratedScorer, Recommender
+    from api.workbench import epikt_guidance_for_topic
+    from data_pipeline.preprocess import sha256 as file_sha256
+    from kt.train import DEFAULT_DATA, read_json, verified_data
+
+    data_path = data_dir or DEFAULT_DATA
+    config = read_json(run_dir / "config.json")
+    manifest_digest = file_sha256(data_path / "manifest.json")
+    if manifest_digest != config["data_manifest_sha256"]:
+        raise ValueError("EpiKT snapshot builder requires the same prepared dataset as training.")
+    verified_data(data_path, ("test.csv",))
+    catalog = Catalog.load(catalog_path)
+    tasks_by_id = {case.task_id: task_view(case.task_id) for case in cases}
+    needed_topics = {task["topic"] for task in tasks_by_id.values()}
+
+    scorer = CalibratedScorer(run_dir, timeout=10, offline=True, allow_smoke=allow_smoke)
+    try:
+        by_source = {item.source_question_id: item for item in catalog.items.values()}
+        inverse = {str(index): int(source) for source, index in scorer.model.mapping["questions"].items()}
+        policy = Recommender(scorer)
+        topic_records: dict[str, dict] = {}
+        with (data_path / "test.csv").open(encoding="utf-8", newline="") as source:
+            for row_index, row in enumerate(csv.DictReader(source)):
+                if row["fold"] != "-1":
+                    raise ValueError("Real EpiKT snapshots only accept held-out learners (fold == -1).")
+                history = []
+                for question, label, repeat in zip(
+                        row["questions"].split(","), row["responses"].split(","),
+                        row["is_repeat"].split(","), strict=True):
+                    if repeat != "0":
+                        continue
+                    target = by_source.get(inverse[question])
+                    if len(history) >= 5:
+                        remaining = needed_topics - set(topic_records)
+                        if not remaining:
+                            break
+                        decision = policy.decide(catalog.items, history)
+                        if decision and decision["source"] == "epikt":
+                            scores = decision["trace"].get("epikt_scores", {})
+                            for topic in sorted(remaining):
+                                candidates = [
+                                    {"item_id": catalog.items[int(iid)].id, "topic": topic,
+                                     "predicted_correct_probability": round(float(prob), 6)}
+                                    for iid, prob in sorted(scores.items(), key=lambda pair: int(pair[0]))
+                                    if int(iid) in catalog.items and catalog.items[int(iid)].topic == topic
+                                ]
+                                if not candidates:
+                                    continue
+                                recent = [
+                                    {"sequence": seq, "topic": item.topic, "correct": ok}
+                                    for seq, (item, ok) in enumerate(history[-12:], max(1, len(history) - 11))
+                                ]
+                                topic_records[topic] = {
+                                    "provenance": {
+                                        "kind": "real_epikt_heldout_prefix",
+                                        "dataset": data_path.name,
+                                        "data_manifest_sha256": manifest_digest,
+                                        "model_version": scorer.version,
+                                        "catalog_revision": catalog.revision,
+                                        "learner_row_index": row_index,
+                                        "history_length": len(history),
+                                        "actual_learner_data": True,
+                                        "actual_epikt_inference": True,
+                                    },
+                                    "recent_independent_attempts": recent,
+                                    "epikt": {
+                                        "available": True,
+                                        "reason": decision["reason"],
+                                        "snapshot_history_version": len(history),
+                                        "current_history_version": len(history),
+                                        "model_version": scorer.version,
+                                        "recommended_item_id": decision["item_id"],
+                                        "recommended_action": ACTION[catalog.items[decision["item_id"]].level],
+                                        "candidates": candidates,
+                                    },
+                                    "confirmed_notes": [],
+                                    "practice_activity": [],
+                                    "constraints": [
+                                        "预测仅适用于已有映射的正式题，不是实作题掌握概率。",
+                                        "实作、提示后作答和正式首次独立作答分开记录。",
+                                        "没有学习证据时先澄清，不推断学生的具体误解。",
+                                    ],
+                                }
+                    if not target or label not in {"0", "1"}:
+                        break
+                    history.append((target, label == "1"))
+                if len(topic_records) == len(needed_topics):
+                    break
+        missing_topics = sorted(needed_topics - set(topic_records))
+        if missing_topics:
+            raise ValueError(f"Could not find held-out EpiKT snapshots for topics: {missing_topics}")
+        snapshots = {}
+        for task_id, task in tasks_by_id.items():
+            base = copy.deepcopy(topic_records[task["topic"]])
+            guidance = epikt_guidance_for_topic(
+                task["topic"], base["epikt"]["candidates"], concepts=task.get("concepts", ())
+            )
+            if guidance is not None:
+                base["guidance"] = guidance
+            snapshots[task_id] = base
+        return snapshots
+    finally:
+        scorer.close()
+
+
 async def run_arm(case, arm, model, model_id, public, *, context=None, knowledge_args=(),
-                  budget_seconds=20, oracle=None, lab_factory=None, shared_lab=None):
+                  budget_seconds=20, oracle=None, lab_factory=None, shared_lab=None, coach_protocol="v4"):
     from langsmith import tracing_context
     from sql_lab.client import open_lab
     from tutor.workbench_coach import WorkbenchCoach
@@ -450,7 +561,9 @@ async def run_arm(case, arm, model, model_id, public, *, context=None, knowledge
             async with asyncio.timeout(budget["active_seconds"]):
                 if arm in {"direct", "rag"}:
                     return await baseline(arm, bounded, model_id, public, context, adapter, budget)
-                return await WorkbenchCoach(bounded, model_id, budget=budget["active_seconds"]).run(
+                return await WorkbenchCoach(
+                    bounded, model_id, budget=budget["active_seconds"], protocol=coach_protocol
+                ).run(
                     public["task"], public["sql"], public["message"], context,
                     tool=adapter, state=None, checkpoint=checkpoint, publish=publish,
                 )
@@ -513,6 +626,19 @@ def summarize(rows):
         evidence = [row["evidence_consistent"] for row in group if row["evidence_consistent"] is not None]
         claims = [item for row in group for item in row.get("counterexamples", [])]
         times = [row["elapsed_ms"] for row in group]
+        input_bytes = [size for row in group for size in row.get("model_input_bytes", ())]
+        usage_stats = usage_summary([call for row in group for call in row["usage"]])
+        reported_total = usage_stats["reported_partial_tokens"]["total_tokens"]
+        reported_calls = usage_stats["calls_reporting_tokens"]["total_tokens"]
+        context_uses = Counter(
+            row.get("result", {}).get("metrics", {}).get("context_use")
+            for row in group
+            if row.get("result", {}).get("metrics", {}).get("context_use") is not None
+        )
+        epikt_applied = sum(
+            bool(row.get("result", {}).get("metrics", {}).get("epikt_guidance_applied"))
+            for row in group
+        )
         summary[arm] = {
             "cases": len(group), "verdict_correct": sum(row["verdict_correct"] for row in group),
             "diagnosis_verdict_accuracy": _ratio(sum(row["verdict_correct"] for row in group), len(group)),
@@ -535,7 +661,11 @@ def summarize(rows):
             "p95_ms": quantiles(times, n=20, method="inclusive")[18] if len(times) > 1 else times[0],
             "model_attempts": sum(row["model_attempts"] for row in group),
             "tool_attempts": sum(row["tool_attempts"] for row in group),
-            "usage": usage_summary([call for row in group for call in row["usage"]]),
+            "mean_input_bytes_per_call": round(mean(input_bytes), 1) if input_bytes else None,
+            "mean_tokens_per_call": round(reported_total / reported_calls, 1) if reported_total is not None and reported_calls else None,
+            "context_use_counts": dict(context_uses),
+            "epikt_guidance_applied_count": epikt_applied,
+            "usage": usage_stats,
             "fallback_count": sum(bool(row.get("fallback_reason")) for row in group),
             "fallbacks": dict(Counter(row["fallback_reason"] for row in group if row.get("fallback_reason"))),
             "timeout_count": sum(row["timeout"] for row in group),
@@ -595,7 +725,7 @@ def manifest(cases, split):
 async def evaluate_suite(args, cases, validation, oracle):
     from contextlib import AsyncExitStack
     from sql_lab.client import open_lab
-    from tutor.workbench_coach import PROMPT_VERSION as COACH_PROMPT_VERSION
+    from tutor.workbench_coach import PROMPT_VERSION as COACH_PROMPT_VERSION, PROMPT_VERSION_V3
 
     base_url = os.environ.get("QUERYSTEP_LLM_BASE_URL")
     model_id = os.environ.get("QUERYSTEP_LLM_MODEL")
@@ -606,9 +736,18 @@ async def evaluate_suite(args, cases, validation, oracle):
         knowledge_args += ["--knowledge-index", str(args.index.resolve())]
     if args.embedding_model:
         knowledge_args += ["--embedding-model", str(args.embedding_model.resolve())]
-    context = copy.deepcopy(SYNTHETIC_SNAPSHOT) if args.synthetic_snapshot == "novice-v1" else {}
+    epikt_snapshots = None
+    context = {}
+    if args.epikt_run:
+        epikt_snapshots = build_epikt_snapshots(
+            args.epikt_run, args.epikt_catalog, cases, data_dir=args.epikt_data
+        )
+    elif args.synthetic_snapshot == "novice-v1":
+        context = copy.deepcopy(SYNTHETIC_SNAPSHOT)
     capacity = asyncio.Semaphore(args.concurrency)
     arms = list(dict.fromkeys(args.arms))
+    coach_protocol = getattr(args, "coach_protocol", "v4")
+    coach_prompt_version = COACH_PROMPT_VERSION if coach_protocol == "v4" else PROMPT_VERSION_V3
     model = ChatModel(base_url, model_id, os.environ.get("QUERYSTEP_LLM_API_KEY"),
                       allow_insecure_http=os.environ.get("QUERYSTEP_LLM_ALLOW_INSECURE_HTTP") == "1",
                       max_retries=args.transient_retries)
@@ -616,14 +755,15 @@ async def evaluate_suite(args, cases, validation, oracle):
     async def run_case(index, case, shared_lab):
         # Frozen once per case; the same serialized public input is used by all arms.
         public = frozen_input(case)
+        case_context = epikt_snapshots[case.task_id] if epikt_snapshots else context
         rows = []
         # Rotate arm order deterministically to reduce fixed provider-time order effects.
         order = arms[index % len(arms):] + arms[:index % len(arms)]
         async with capacity:
             for arm in order:
-                row = await run_arm(case, arm, model, model_id, public, context=context,
+                row = await run_arm(case, arm, model, model_id, public, context=case_context,
                                     knowledge_args=tuple(knowledge_args), budget_seconds=args.budget_seconds,
-                                    oracle=oracle, shared_lab=shared_lab)
+                                    oracle=oracle, shared_lab=shared_lab, coach_protocol=coach_protocol)
                 rows.append(row)
                 print(f"{case.id} {arm} {row['predicted']} fallback={row['fallback_reason'] or 'none'} "
                       f"calls={row['usage_summary']['provider_calls']} ms={row['elapsed_ms']}", flush=True)
@@ -647,15 +787,26 @@ async def evaluate_suite(args, cases, validation, oracle):
             "Arm wall time reusing a warm MCP process (matching production API), excluding MCP startup, label audit, "
             "and evaluation-only replay; descriptive p50/p95, no confidence intervals."
         )
+    if epikt_snapshots:
+        context_fixture = epikt_snapshots
+        context_interpretation = (
+            "Real calibrated EpiKT inference on held-out DBE-KT22 learner prefixes supplied per task topic; "
+            "measures coach context conditioning, NOT causal student learning gains."
+        )
+    elif context:
+        context_fixture = context
+        context_interpretation = "Synthetic learning-context ablation only; no actual EpiKT predictions or learner evidence."
+    else:
+        context_fixture = None
+        context_interpretation = "No context supplied: agent and agent_without_context are duplicate stochastic controls, not a context-effect estimate."
     report = {**base_manifest, "model": model_id, "baseline_prompt_version": PROMPT_VERSION,
-              "coach_prompt_version": COACH_PROMPT_VERSION, "mcp_mode": args.mcp_mode,
-              "transient_retries": args.transient_retries,
+              "coach_protocol": coach_protocol, "coach_prompt_version": coach_prompt_version,
+              "mcp_mode": args.mcp_mode, "transient_retries": args.transient_retries,
               "label_validation": validation, "concurrency": args.concurrency, "arms": arms,
               "arm_order": "deterministic rotation by selected-case index",
               "budgets": {arm: arm_budget(arm, args.budget_seconds) for arm in arms},
-              "context_fixture": context or None,
-              "context_interpretation": "Synthetic learning-context ablation only; no actual EpiKT predictions or learner evidence." if context
-                                        else "No context supplied: agent and agent_without_context are duplicate stochastic controls, not a context-effect estimate.",
+              "context_fixture": context_fixture,
+              "context_interpretation": context_interpretation,
               "knowledge": {"index_supplied": bool(args.index), "embedding_model_supplied": bool(args.embedding_model),
                             "tool": "search_course_knowledge", "actual_modes": sorted({
                                 call["data"].get("mode", "unknown") for row in rows for call in row["tool_audit"]
@@ -672,6 +823,8 @@ def parser():
     result.add_argument("--limit", type=int)
     result.add_argument("--concurrency", type=int, choices=(1, 2, 3), default=1)
     result.add_argument("--budget-seconds", type=float, default=20)
+    result.add_argument("--coach-protocol", choices=COACH_PROTOCOLS, default="v4",
+                        help="Coach prompt/payload protocol: v4 (compact + coverage) or v3 (pre-optimization baseline).")
     result.add_argument("--mcp-mode", choices=("cold", "warm"), default="cold",
                         help="Launch MCP per arm (cold) or reuse one warm MCP process across the suite (warm).")
     result.add_argument("--transient-retries", type=int, choices=(0, 1, 2, 3), default=0,
@@ -681,6 +834,9 @@ def parser():
     result.add_argument("--index", type=Path)
     result.add_argument("--embedding-model", type=Path)
     result.add_argument("--synthetic-snapshot", choices=("none", "novice-v1"), default="none")
+    result.add_argument("--epikt-run", type=Path, help="Real trained EpiKT run dir for held-out learner snapshot context.")
+    result.add_argument("--epikt-catalog", type=Path, help="Authorized catalog JSON matching --epikt-run.")
+    result.add_argument("--epikt-data", type=Path, help="Prepared DBE-KT22 dataset dir containing test.csv.")
     result.add_argument("--validate-labels", action="store_true", help="Engine-only audit; never load or call a provider.")
     return result
 
@@ -694,15 +850,19 @@ def main(argv=None):
         cli.error("--output is required for provider evaluation.")
     if args.validate_labels and args.annotation_output:
         cli.error("Annotations require model responses, not label validation only.")
+    if args.epikt_run and args.synthetic_snapshot != "none":
+        cli.error("--epikt-run cannot be combined with --synthetic-snapshot.")
+    if bool(args.epikt_run) != bool(args.epikt_catalog):
+        cli.error("--epikt-run and --epikt-catalog must be provided together.")
     paths = [path.resolve() for path in (args.output, args.annotation_output) if path]
     if len(paths) != len(set(paths)):
         cli.error("Report and annotation paths must differ.")
     for path in paths:
         if path.exists() or not path.parent.is_dir():
             cli.error("Output must be a new file in an existing directory.")
-    for path in (args.index, args.embedding_model):
+    for path in (args.index, args.embedding_model, args.epikt_run, args.epikt_catalog, args.epikt_data):
         if path and not path.exists():
-            cli.error("Knowledge index / embedding model path does not exist.")
+            cli.error("Knowledge index / embedding model / EpiKT path does not exist.")
     try:
         cases = select_cases(args.split, args.cases, args.limit)
     except ValueError as exc:

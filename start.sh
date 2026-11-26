@@ -11,7 +11,7 @@ backend_url="http://127.0.0.1:$backend_port"
 frontend_url="http://127.0.0.1:$frontend_port"
 vite_cli="$project_dir/web/node_modules/vite/bin/vite.js"
 coach_enabled="${QUERYSTEP_COACH_ENABLED:-0}"
-diagnostics_enabled="${QUERYSTEP_DIAGNOSTICS_ENABLED:-$coach_enabled}"
+diagnostics_enabled="${QUERYSTEP_DIAGNOSTICS_ENABLED:-1}"
 
 fail() {
     printf '%s\n' "$1" >&2
@@ -38,9 +38,15 @@ conda_profile="$conda_base/etc/profile.d/conda.sh"
 source "$conda_profile"
 conda activate querystep || fail '无法激活 Conda 环境 querystep，请按操作手册恢复环境。'
 
-python -m course_content.check_catalog --run "$run_dir" --catalog "$catalog"
+if [[ -n "${QUERYSTEP_PYTHON:-}" ]]; then
+    backend_python="$QUERYSTEP_PYTHON"
+elif [[ -x "$project_dir/artifacts/diagnostics-venv/bin/python" ]]; then
+    backend_python="$project_dir/artifacts/diagnostics-venv/bin/python"
+else
+    backend_python="python"
+fi
 
-backend_python="${QUERYSTEP_PYTHON:-python}"
+"$backend_python" -m course_content.check_catalog --run "$run_dir" --catalog "$catalog"
 
 backend_pid=
 frontend_pid=
@@ -101,6 +107,12 @@ if [[ "$diagnostics_enabled" == 1 ]] && ! python -c 'import json, sys
 sys.exit(json.load(sys.stdin).get("diagnostics_ready") is not True)' <<< "$health"; then
     printf '%s\n' "$health" >&2
     fail '诊断模块未就绪，请检查 diagnostics 依赖、数据库和 MCP 启动日志。'
+fi
+
+if ! python -c 'import json, sys
+sys.exit(json.load(sys.stdin).get("sql_workbench_ready") is not True)' <<< "$health"; then
+    printf '%s\n' "$health" >&2
+    fail 'SQL 实作工作台未就绪，请检查 sql_lab 与依赖安装。'
 fi
 
 if [[ "$coach_enabled" == 1 ]] && ! python -c 'import json, sys

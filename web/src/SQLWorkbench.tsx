@@ -4,6 +4,20 @@ type Request = <T>(path: string, body?: unknown, method?: string) => Promise<T>;
 type Cell = string | number | null;
 type Table = { name: string; columns: string[]; types?: string[]; rows: Cell[][] };
 type TaskSummary = { id: string; title: string; topic: string; concepts: string[] };
+type Recommendation = {
+  available: boolean;
+  source: "epikt" | "history_fallback" | "none";
+  task_id?: string;
+  task_title?: string;
+  topic?: string;
+  guidance_tier?: "foundation" | "boundary" | "transfer";
+  scaffolding_level?: string;
+  priority_scenarios?: string[];
+  mean_predicted_probability?: number | null;
+  candidate_count?: number;
+  model_version?: string | null;
+  reason?: string;
+};
 type Task = TaskSummary & { prompt: string; starter_sql: string; dialect: "sqlite"; version: number; tables: Table[]; ordered: boolean };
 type Draft = { sql: string; version: number };
 type QueryResult = { status: "ok" | "rejected" | "error" | "timeout"; columns: string[]; rows: Cell[][]; row_count: number; error: string | null; elapsed_ms: number; fingerprint: string; scenario: string; seed: number };
@@ -42,7 +56,8 @@ const engineErrors: Record<string, string> = {
 };
 const engineMessage = (value: unknown) => named(engineErrors, value);
 const toolNames: Record<string, string> = { run: "运行样例查询", check: "验证多组数据", inspect_student_sql: "检查 SQL 有效性", run_student_sql: "运行场景查询", check_student_sql: "核对场景与边界", search_course: "检索课程依据", search_course_knowledge: "检索课程依据" };
-const topicNames: Record<string, string> = { select: "投影查询", filter: "条件筛选", join: "表连接", aggregate: "分组聚合", null: "空值处理", distinct: "去重", subquery: "子查询", union: "集合合并", order: "结果排序" };
+const topicNames: Record<string, string> = { select: "投影查询", where: "条件筛选", filter: "条件筛选", join: "表连接", aggregate: "分组聚合", null: "空值处理", distinct: "去重", subquery: "子查询", union: "集合合并", order: "结果排序" };
+const tierNames: Record<string, string> = { foundation: "基础概念澄清", boundary: "边界条件验证", transfer: "迁移与举一反三" };
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 const numberText = (value: unknown, suffix = "") => finite(value) ? `${value}${suffix}` : "未知";
 const versionText = (value: unknown) => bounded(value, 120) || (finite(value) ? String(value) : "未知");
@@ -156,7 +171,7 @@ function Events({ run }: { run: Run }) {
   return <details className="sql-wb-events"><summary>执行轨迹 · {run.events.length} 个事件</summary><ol>{[...run.events].sort((a, b) => a.seq - b.seq).map((event) => <li key={event.seq}><span>{event.seq}. {Object.hasOwn(names, event.type) ? names[event.type] : "状态更新"}</span>{event.tool && <small>{named(toolNames, event.tool)}</small>}{event.type === "retrieval_version" && <small className="sql-wb-prose">{bounded(record(event.data)?.mode, 30) || "未知检索方式"} · 课程版本 {versionText(record(event.data)?.corpus)}</small>}{typeof event.elapsed_ms === "number" && <small>{event.elapsed_ms} ms</small>}</li>)}</ol>{!run.events.length && <p className="sql-wb-muted">尚无执行事件。</p>}</details>;
 }
 
-export default function SQLWorkbench({ active, request, ensureSession, onPractice, onAssistant }: { active: boolean; request: Request; ensureSession: () => Promise<void>; onPractice: () => void; onAssistant: () => void }) {
+export default function SQLWorkbench({ active, preferredTopic, request, ensureSession, onPractice, onAssistant }: { active: boolean; preferredTopic?: string | null; request: Request; ensureSession: () => Promise<void>; onPractice: () => void; onAssistant: () => void }) {
   // Per-task entries retain local edits while switching tasks or hiding this workbench.
   // Saves are serialized per task; response bodies never replace newer editor input.
   const entries = useRef<Record<string, Entry>>({});
@@ -170,6 +185,7 @@ export default function SQLWorkbench({ active, request, ensureSession, onPractic
   const composing = useRef(false);
   const [, redraw] = useState(0);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
+  const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
   const [taskId, setTaskId] = useState("");
   const [loading, setLoading] = useState(true);
   const [initError, setInitError] = useState("");
@@ -199,12 +215,17 @@ export default function SQLWorkbench({ active, request, ensureSession, onPractic
     initializing.current = true; setLoading(true); setInitError("");
     try {
       await ensureSession();
-      const data = await request<{ available: boolean; tasks: TaskSummary[]; coach_available?: boolean; coach_reason?: string }>("/api/sql/tasks");
+      const data = await request<{ available: boolean; tasks: TaskSummary[]; coach_available?: boolean; coach_reason?: string; recommendation?: Recommendation }>("/api/sql/tasks");
       if (!mounted.current) return;
       if (!data.available || !data.tasks.length) throw new Error("SQL 实作暂不可用，请稍后重试。");
       setCoachUnavailable(data.coach_available === false ? (data.coach_reason === "model_unavailable" ? "实验教练未配置模型；仍可运行 SQL 和提交验证。" : "实验教练依赖暂不可用；仍可运行 SQL 和提交验证。") : "");
       setTasks(data.tasks);
-      const id = currentId.current || data.tasks.find((task) => task.id === "left_join_counts")?.id || data.tasks[0].id;
+      setRecommendation(data.recommendation ?? null);
+      const preferred = preferredTopic ? data.tasks.find((task) => task.topic === preferredTopic)?.id : undefined;
+      const recommended = data.recommendation?.available && data.recommendation.task_id
+        ? data.tasks.find((task) => task.id === data.recommendation?.task_id)?.id
+        : undefined;
+      const id = currentId.current || preferred || recommended || data.tasks.find((task) => task.id === "left_join_counts")?.id || data.tasks[0].id;
       currentId.current = id; setTaskId(id); void loadTask(id);
     } catch (error) { if (mounted.current) setInitError(errorText(error)); }
     finally { initializing.current = false; if (mounted.current) setLoading(false); }
@@ -311,6 +332,11 @@ export default function SQLWorkbench({ active, request, ensureSession, onPractic
     if (!active) Object.keys(entries.current).forEach((id) => { void saveDraft(id); });
   }, [active]);
   useEffect(() => {
+    if (!active || !preferredTopic || !tasks.length) return;
+    const match = tasks.find((task) => task.topic === preferredTopic);
+    if (match && match.id !== currentId.current) chooseTask(match.id);
+  }, [active, preferredTopic, tasks]);
+  useEffect(() => {
     mounted.current = true;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
@@ -334,7 +360,19 @@ export default function SQLWorkbench({ active, request, ensureSession, onPractic
         <div className="workspace-heading"><div><p className="eyebrow">WRITE. RUN. UNDERSTAND.</p><h1>SQL 实作</h1></div><span className="sql-wb-badge">SQLite</span></div>
         <p className="sql-wb-intro">亲手写查询，用结果检验思路。这里的实验不计入正式已答题数。</p>
         {loading ? <p className="loading-card" role="status">正在准备 SQL 实作…</p> : initError ? <div className="sql-wb-warning" role="alert"><p>{initError}</p><button className="secondary" onClick={() => void initialize()}>重试加载任务列表</button></div> : <>
-          <label className="sql-wb-task-picker">选择实作任务<select value={taskId} onChange={(event) => chooseTask(event.target.value)}>{tasks.map((task, index) => <option key={task.id} value={task.id}>{String(index + 1).padStart(2, "0")} · {task.title}</option>)}</select></label>
+          {recommendation?.available && recommendation.task_id && <section className="sql-wb-recommendation" aria-label="自适应实作推荐">
+            <div className="sql-wb-row">
+              <strong>{recommendation.source === "epikt" ? "EpiKT 薄弱主题推荐实作" : "基于近期错题推荐实作"}：{recommendation.task_title}</strong>
+              {recommendation.guidance_tier && <span className="sql-wb-badge">{named(tierNames, recommendation.guidance_tier)}</span>}
+            </div>
+            <p className="sql-wb-muted">
+              主题 {named(topicNames, recommendation.topic) || "SQL"}
+              {typeof recommendation.mean_predicted_probability === "number" ? ` · 同主题正式题校准预测均值 ${(recommendation.mean_predicted_probability * 100).toFixed(1)}%（不等于掌握度）` : ""}
+              {recommendation.priority_scenarios?.length ? ` · 优先核验：${recommendation.priority_scenarios.join(" → ")}` : ""}
+            </p>
+            {recommendation.task_id !== taskId && <button className="secondary" onClick={() => chooseTask(recommendation.task_id!)}>切换到推荐任务</button>}
+          </section>}
+          <label className="sql-wb-task-picker">选择实作任务<select value={taskId} onChange={(event) => chooseTask(event.target.value)}>{tasks.map((task, index) => <option key={task.id} value={task.id}>{String(index + 1).padStart(2, "0")} · {task.title}{recommendation?.available && recommendation.task_id === task.id ? "（推荐）" : ""}</option>)}</select></label>
           {!!unresolved.length && <div className="sql-wb-warning"><p>其他任务仍有未保存的输入：</p>{unresolved.map(([id, item]) => <button className="text-button" key={id} onClick={() => chooseTask(id)}>{item.task.title} · 返回处理</button>)}</div>}
           {loadErrors[taskId] ? <div className="sql-wb-warning" role="alert"><p>{loadErrors[taskId]}</p><button className="secondary" onClick={() => void loadTask(taskId)}>重试加载此任务</button></div> : !entry ? <p className="loading-card" role="status">正在读取任务与草稿…</p> : <>
             <section className="sql-wb-card" aria-label="实作需求"><div className="sql-wb-tags">{entry.task.concepts.map((concept) => <span key={concept}>{concept}</span>)}</div><h2>{entry.task.title}</h2><p className="sql-wb-prose">{entry.task.prompt}</p><p className="sql-wb-muted">{entry.task.ordered ? "结果需要符合指定顺序。" : "验证时忽略行顺序，保留重复行。"}</p>

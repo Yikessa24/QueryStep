@@ -16,14 +16,36 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.api
+      args:
+        QUERYSTEP_EXTRAS: ${QUERYSTEP_DOCKER_EXTRAS:-api,diagnostics,kt,knowledge}
     environment:
       QUERYSTEP_DATABASE_URL: postgresql+psycopg://querystep@db:5432/querystep
       PGPASSWORD: ${QUERYSTEP_DB_PASSWORD:?Set QUERYSTEP_DB_PASSWORD}
+      QUERYSTEP_CATALOG: ${QUERYSTEP_DOCKER_CATALOG:-/app/course_content/catalog.json}
+      QUERYSTEP_EPIKT_RUN: ${QUERYSTEP_DOCKER_EPIKT_RUN:-}
+      QUERYSTEP_DIAGNOSTICS_ENABLED: ${QUERYSTEP_DIAGNOSTICS_ENABLED:-1}
+      QUERYSTEP_DIAGNOSIS_CHECKPOINTS: /app/runtime/diagnosis-checkpoints.sqlite3
+      QUERYSTEP_COACH_ENABLED: ${QUERYSTEP_COACH_ENABLED:-0}
+      QUERYSTEP_COACH_MODEL: ${QUERYSTEP_COACH_MODEL:-${QUERYSTEP_LLM_MODEL:-gemini-3-flash}}
+      QUERYSTEP_EXPLANATION_MODEL: ${QUERYSTEP_EXPLANATION_MODEL:-${QUERYSTEP_LLM_MODEL:-gemini-3-flash}}
+      QUERYSTEP_KNOWLEDGE_INDEX: ${QUERYSTEP_DOCKER_KNOWLEDGE_INDEX:-}
+      QUERYSTEP_EMBEDDING_MODEL: ${QUERYSTEP_DOCKER_EMBEDDING_MODEL:-}
       QUERYSTEP_LLM_BASE_URL: ${QUERYSTEP_LLM_BASE_URL:-}
       QUERYSTEP_LLM_MODEL: ${QUERYSTEP_LLM_MODEL:-}
       QUERYSTEP_LLM_API_KEY: ${QUERYSTEP_LLM_API_KEY:-}
-      QUERYSTEP_LLM_TIMEOUT_SECONDS: ${QUERYSTEP_LLM_TIMEOUT_SECONDS:-5}
+      QUERYSTEP_LLM_TIMEOUT_SECONDS: ${QUERYSTEP_LLM_TIMEOUT_SECONDS:-10}
+      QUERYSTEP_LLM_TRANSIENT_RETRIES: ${QUERYSTEP_LLM_TRANSIENT_RETRIES:-2}
       QUERYSTEP_LLM_ALLOW_INSECURE_HTTP: ${QUERYSTEP_LLM_ALLOW_INSECURE_HTTP:-0}
+      QUERYSTEP_LLM_ALLOW_MAPPED_ITEMS: ${QUERYSTEP_LLM_ALLOW_MAPPED_ITEMS:-0}
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+      - ./research:/app/research:ro
+      - api_runtime:/app/runtime
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     depends_on:
       db:
         condition: service_healthy
@@ -31,8 +53,11 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.web
-    depends_on: [api]
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8080:80"
 volumes:
   pgdata:
+  api_runtime:

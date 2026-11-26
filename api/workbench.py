@@ -31,6 +31,44 @@ def now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def epikt_guidance_for_topic(topic: str, candidates: list[dict], *, concepts: tuple[str, ...] | list[str] = ()) -> dict | None:
+    probs = [
+        float(item["predicted_correct_probability"])
+        for item in candidates
+        if isinstance(item.get("predicted_correct_probability"), (int, float))
+        and 0.0 <= float(item["predicted_correct_probability"]) <= 1.0
+    ]
+    if not probs:
+        return None
+    mean_prob = sum(probs) / len(probs)
+    concept_set = set(concepts)
+    if mean_prob < 0.65:
+        tier = "foundation"
+        scaffolding = "step_by_step"
+        scenarios = ["sample", "boundary", "empty", "duplicates"]
+    elif mean_prob <= 0.85:
+        tier = "boundary"
+        scaffolding = "targeted_boundary"
+        scenarios = (
+            ["boundary", "empty", "duplicates", "sample"]
+            if "null" in concept_set
+            else ["boundary", "duplicates", "empty", "sample"]
+        )
+    else:
+        tier = "transfer"
+        scaffolding = "concise_transfer"
+        scenarios = ["boundary", "empty", "duplicates", "sample"]
+    return {
+        "source": "epikt",
+        "topic": topic,
+        "topic_mean_predicted_probability": round(mean_prob, 4),
+        "candidate_count": len(probs),
+        "recommended_context_use": tier,
+        "scaffolding_level": scaffolding,
+        "priority_scenarios": scenarios,
+    }
+
+
 class SQLDraft(Base):
     __tablename__ = "sql_drafts"
     learner_id: Mapped[str] = mapped_column(ForeignKey("learners.id"), primary_key=True)
@@ -203,6 +241,7 @@ class Workbench:
         snapshot = db.scalar(select(Decision).where(Decision.learner_id == learner)
                              .order_by(Decision.history_version.desc()).limit(1))
         epikt = {"available": False, "reason": "no_prediction"}
+        guidance = None
         if snapshot:
             epikt = {"available": snapshot.source == "epikt", "reason": snapshot.reason,
                      "snapshot_history_version": snapshot.history_version,
@@ -214,6 +253,9 @@ class Workbench:
                     if item and item.topic == task["topic"]:
                         epikt["candidates"].append({"item_id": item.id, "topic": item.topic,
                                                      "predicted_correct_probability": probability})
+                guidance = epikt_guidance_for_topic(
+                    task["topic"], epikt["candidates"], concepts=task.get("concepts", ())
+                )
         notes = []
         if self.memories_enabled:
             from api.learning_memory import LearningMemory, active_memories
@@ -224,14 +266,99 @@ class Workbench:
         prior = db.scalars(select(SQLRun).where(SQLRun.learner_id == learner, SQLRun.task_id == task["id"],
                                                 SQLRun.status == "completed")
                            .order_by(SQLRun.created_at.desc()).limit(4)).all()
-        return {"captured_at": now().isoformat() + "Z", "recent_independent_attempts": recent,
-                "epikt": epikt, "confirmed_notes": notes,
-                "practice_activity": [{"action": row.action,
-                                        "status": (row.result or {}).get("check", {}).get("status"),
-                                        "assisted": row.action == "coach"} for row in reversed(prior)],
-                "constraints": ["预测仅适用于已有映射的正式题，不是实作题掌握概率。",
-                                "实作、提示后作答和正式首次独立作答分开记录。",
-                                "没有学习证据时先澄清，不推断学生的具体误解。"]}
+        context = {"captured_at": now().isoformat() + "Z", "recent_independent_attempts": recent,
+                   "epikt": epikt, "confirmed_notes": notes,
+                   "practice_activity": [{"action": row.action,
+                                           "status": (row.result or {}).get("check", {}).get("status"),
+                                           "assisted": row.action == "coach"} for row in reversed(prior)],
+                   "constraints": ["预测仅适用于已有映射的正式题，不是实作题掌握概率。",
+                                   "实作、提示后作答和正式首次独立作答分开记录。",
+                                   "没有学习证据时先澄清，不推断学生的具体误解。"]}
+        if guidance is not None:
+            context["guidance"] = guidance
+        return context
+
+    def recommend_task(self, learner: str) -> dict:
+        tasks_by_topic: dict[str, list[dict]] = {}
+        for task in self.catalog:
+            tasks_by_topic.setdefault(task["topic"], []).append(task)
+        with self.db.transaction() as db:
+            record = db.get(Learner, learner)
+            passed_task_ids = {
+                row.task_id
+                for row in db.scalars(
+                    select(SQLRun).where(SQLRun.learner_id == learner, SQLRun.status == "completed")
+                )
+                if (row.result or {}).get("check", {}).get("passed") is True
+            }
+            snapshot = db.scalar(
+                select(Decision).where(Decision.learner_id == learner)
+                .order_by(Decision.history_version.desc()).limit(1)
+            )
+            if snapshot and snapshot.source == "epikt":
+                grouped: dict[str, list[dict]] = {}
+                for item_id, probability in snapshot.trace.get("epikt_scores", {}).items():
+                    item = self.practice.catalog.items.get(int(item_id))
+                    if item and item.topic in tasks_by_topic:
+                        grouped.setdefault(item.topic, []).append(
+                            {"item_id": item.id, "topic": item.topic,
+                             "predicted_correct_probability": float(probability)}
+                        )
+                scored_topics = []
+                for topic, candidates in grouped.items():
+                    guidance = epikt_guidance_for_topic(topic, candidates)
+                    if guidance is not None:
+                        scored_topics.append((guidance["topic_mean_predicted_probability"], topic, candidates))
+                if scored_topics:
+                    scored_topics.sort(key=lambda row: (row[0], row[1]))
+                    _, weakest_topic, candidates = scored_topics[0]
+                    topic_tasks = tasks_by_topic[weakest_topic]
+                    chosen = next((t for t in topic_tasks if t["id"] not in passed_task_ids), topic_tasks[0])
+                    guidance = epikt_guidance_for_topic(
+                        weakest_topic, candidates, concepts=chosen.get("concepts", ())
+                    )
+                    return {
+                        "available": True,
+                        "source": "epikt",
+                        "task_id": chosen["id"],
+                        "task_title": chosen["title"],
+                        "topic": weakest_topic,
+                        "guidance_tier": guidance["recommended_context_use"],
+                        "scaffolding_level": guidance["scaffolding_level"],
+                        "priority_scenarios": guidance["priority_scenarios"],
+                        "mean_predicted_probability": guidance["topic_mean_predicted_probability"],
+                        "candidate_count": guidance["candidate_count"],
+                        "model_version": snapshot.trace.get("model_version"),
+                        "snapshot_history_version": snapshot.history_version,
+                        "current_history_version": record.history_version if record else 0,
+                        "reason": "lowest_calibrated_topic_probability",
+                    }
+            recent_wrong = db.scalars(
+                select(Attempt).where(Attempt.learner_id == learner, Attempt.correct.is_(False))
+                .order_by(Attempt.event_seq.desc()).limit(12)
+            ).all()
+            for row in recent_wrong:
+                item = self.practice.catalog.items.get(row.item_id)
+                if item and item.topic in tasks_by_topic:
+                    topic_tasks = tasks_by_topic[item.topic]
+                    chosen = next((t for t in topic_tasks if t["id"] not in passed_task_ids), topic_tasks[0])
+                    return {
+                        "available": True,
+                        "source": "history_fallback",
+                        "task_id": chosen["id"],
+                        "task_title": chosen["title"],
+                        "topic": item.topic,
+                        "guidance_tier": "foundation",
+                        "scaffolding_level": "step_by_step",
+                        "priority_scenarios": ["sample", "boundary", "empty", "duplicates"],
+                        "mean_predicted_probability": None,
+                        "candidate_count": 0,
+                        "model_version": None,
+                        "snapshot_history_version": None,
+                        "current_history_version": record.history_version if record else 0,
+                        "reason": "recent_incorrect_topic_attempt",
+                    }
+        return {"available": False, "source": "none", "reason": "no_epikt_or_history"}
 
     async def submit(self, learner, task_id, body):
         task = self.task(task_id)
@@ -474,7 +601,7 @@ def router(learner):
     def tasks(request: Request, user: str = Depends(learner)):
         instance = service(request)
         return {"available": True, "tasks": instance.catalog, "coach_available": instance.coach_reason is None,
-                "coach_reason": instance.coach_reason}
+                "coach_reason": instance.coach_reason, "recommendation": instance.recommend_task(user)}
 
     @routes.get("/tasks/{task_id}")
     def detail(task_id: str, request: Request, user: str = Depends(learner)):

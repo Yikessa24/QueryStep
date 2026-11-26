@@ -1,13 +1,20 @@
 FROM python:3.11-slim
 WORKDIR /app
-ARG QUERYSTEP_EXTRAS=api
+ARG QUERYSTEP_EXTRAS=api,diagnostics,kt,knowledge
+ARG PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 COPY pyproject.toml ./
 COPY api api
+COPY course_content course_content
 COPY data_pipeline data_pipeline
 COPY evals evals
 COPY kt kt
+COPY sql_lab sql_lab
 COPY tutor tutor
-COPY course_content/__init__.py course_content/catalog.json course_content/lessons.py ./course_content/
-RUN pip install --no-cache-dir -e ".[${QUERYSTEP_EXTRAS}]"
+RUN pip install --no-cache-dir \
+    --extra-index-url "${PIP_EXTRA_INDEX_URL}" \
+    -e ".[${QUERYSTEP_EXTRAS}]" \
+    && mkdir -p /app/runtime
 EXPOSE 8000
 CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
