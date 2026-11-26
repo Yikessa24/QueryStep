@@ -554,3 +554,25 @@ def test_unknown_inputs_errors_fingerprints_and_scenario_bounds():
     assert first["elapsed_ms"] >= 0 and first["error"] is None
     assert set(first) == {"status", "columns", "rows", "row_count", "error", "elapsed_ms", "fingerprint", "scenario", "seed"}
     assert run_query("filter_paid", "SELECT * FROM orders", seed=1)["fingerprint"] != first["fingerprint"]
+
+
+def test_linux_worker_rss_reads_proc_statm_not_fork_inherited_ru_maxrss(monkeypatch):
+    import builtins
+    import io
+
+    class HugeParentRusage:
+        ru_maxrss = 1024 * 1024  # 1 GiB (KiB on Linux) inherited across fork()+execve()
+
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path) == "/proc/self/statm":
+            return io.StringIO("25000 6400 3000 10 0 4000 0\n")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(query_worker.sys, "platform", "linux")
+    monkeypatch.setattr(query_worker.resource, "getrusage", lambda _who: HugeParentRusage())
+    monkeypatch.setattr(query_worker.os, "sysconf", lambda name: 4096 if name == "SC_PAGE_SIZE" else 0)
+    monkeypatch.setattr(builtins, "open", fake_open)
+    assert query_worker._current_rss_bytes() == 6400 * 4096
+    assert query_worker._current_rss_bytes() < query_worker.MEMORY_BYTES

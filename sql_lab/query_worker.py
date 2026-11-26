@@ -37,6 +37,17 @@ class Rejected(ValueError):
     pass
 
 
+def _current_rss_bytes() -> int:
+    if sys.platform == "linux":
+        # On Linux, getrusage(RUSAGE_SELF).ru_maxrss inherits the parent's pre-exec
+        # high-water RSS via signal->maxrss after fork()+execve() (e.g. when the API
+        # or MCP process holds PyTorch/BGE weights), causing false OOM kills.
+        # /proc/self/statm field 1 reports the worker's actual post-exec resident pages.
+        with open("/proc/self/statm", encoding="ascii") as handle:
+            return int(handle.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+
 def _restrict_resources() -> None:
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
@@ -55,9 +66,10 @@ def _restrict_resources() -> None:
         while True:
             if time.monotonic() >= deadline:
                 os._exit(74)
-            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            if sys.platform != "darwin":
-                rss *= 1024
+            try:
+                rss = _current_rss_bytes()
+            except (OSError, ValueError, IndexError):
+                rss = 0
             if rss > MEMORY_BYTES:
                 os._exit(73)
             time.sleep(0.025)

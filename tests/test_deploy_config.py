@@ -187,6 +187,7 @@ class DeployConfigTest(unittest.TestCase):
             "proxy_buffering off;",
             "proxy_cache off;",
             "chunked_transfer_encoding off;",
+            'add_header X-Accel-Buffering "no" always;',
             "proxy_read_timeout",
         ):
             self.assertIn(directive, body)

@@ -237,7 +237,7 @@ curl -fsS http://127.0.0.1:8080/healthz | python3 -m json.tool
 验收条件：
 1. `/healthz` 中 `"epikt_ready": true`、`"sql_workbench_ready": true`、`"diagnostics_ready": true`；
 2. 完成 3 道冷启动题并请求第 4 题后，确认推荐 `"source": "epikt"`，紧接着 `GET /api/sql/tasks` 返回的 `recommendation.source == "epikt"`，包含 `guidance_tier`、`mean_predicted_probability` 与 `priority_scenarios`；
-3. 当遇到题号 `75` 或 `81` 答错并触发 `POST /api/practice/{decision_id}/diagnosis` 时，用 `curl -iN -b <cookie> http://127.0.0.1:8080/api/diagnosis/{run_id}/events` 验证响应头含 `content-type: text/event-stream` 与 `x-accel-buffering: no`，且事件逐条实时到达直至 `event: settled`。
+3. 当遇到题号 `75` 或 `81` 答错并触发 `POST /api/practice/{decision_id}/diagnosis` 时，用 `curl -iN -b <cookie> http://127.0.0.1:8080/api/diagnosis/{run_id}/events` 验证响应头含 `content-type: text/event-stream` 与 `x-accel-buffering: no`（Nginx 默认消费并剥离上游 `X-Accel-Buffering`，本仓库 `deploy/nginx.conf` 同时显式关闭 `proxy_buffering` 并通过 `add_header X-Accel-Buffering "no" always` 透出给下游），且事件按序逐条实时到达直至 `event: settled`。
 
 ---
 
